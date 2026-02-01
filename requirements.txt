@@ -1,3 +1,7 @@
 streamlit
 pandas
 plotly
+xlrd
+openpyxl
+lxml
+pyxlsb
