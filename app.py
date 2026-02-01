@@ -5,12 +5,12 @@ import time
 import re
 import os
 
+# 페이지 설정
 st.set_page_config(page_title="율곡고시원 통합 관리 시스템", layout="wide")
 
-# --- [1] 세션 및 파일 저장 설정 ---
+# --- [1] 세션 및 카테고리 설정 유지 로직 ---
 CAT_FILE = "cat_settings.csv"
 
-# 1. 카테고리 설정 로드 (껐다 켜도 유지)
 if 'cat_df' not in st.session_state:
     if os.path.exists(CAT_FILE):
         st.session_state.cat_df = pd.read_csv(CAT_FILE)
@@ -20,40 +20,43 @@ if 'cat_df' not in st.session_state:
             "연결구분": ["수익", "비용", "비용", "비용", "비용", "-", "비용", "비용", "비용"]
         })
 
-# 2. 마스터 데이터 로드
 if 'master_df' not in st.session_state:
     st.session_state.master_df = pd.DataFrame(columns=["연도", "월", "날짜", "내용", "용도", "구분", "금액", "비고"])
 
-# --- [2] 핵심: 데이터 편집 실시간 반영 콜백 (행 튀어오름 방지 핵심 기술) ---
-def on_edit():
-    # 에디터의 변경 사항을 즉시 마스터 데이터에 반영
+if 'needs_download' not in st.session_state:
+    st.session_state.needs_download = False
+
+# --- [2] 핵심: 행 위치 고정 및 실시간 동기화 콜백 ---
+def on_editor_change():
+    """에디터에서 수정이 일어나는 즉시 메모리에 반영 (행 튀어오름 방지)"""
     if "master_editor" in st.session_state:
         changes = st.session_state["master_editor"]
         c_map = dict(zip(st.session_state.cat_df['항목명'], st.session_state.cat_df['연결구분']))
         
-        # 수정된 셀 반영
+        # 1. 수정된 셀 반영 (인덱스를 건드리지 않아 위치가 고정됨)
         for row_idx, edit_dict in changes["edited_rows"].items():
             actual_idx = st.session_state.master_df.index[row_idx]
             for col, val in edit_dict.items():
                 st.session_state.master_df.at[actual_idx, col] = val
-                # 용도가 바뀌면 구분(자동)도 즉시 동기화
+                # 용도가 바뀌면 구분(자동)도 즉각 동기화
                 if col == "용도":
                     st.session_state.master_df.at[actual_idx, "구분"] = c_map.get(val, "비용")
         
-        # 추가된 행 반영
-        for row in changes["added_rows"]:
-            new_row = {col: "" for col in st.session_state.master_df.columns}
-            new_row.update(row)
-            # 기본값 설정
-            if not new_row["용도"]: new_row["용도"] = "기타"
-            new_row["구분"] = c_map.get(new_row["용도"], "비용")
-            st.session_state.master_df = pd.concat([st.session_state.master_df, pd.DataFrame([new_row])], ignore_index=True)
+        # 2. 행 추가/삭제 시에만 구조 업데이트
+        if changes["added_rows"] or changes["deleted_rows"]:
+            for row in changes["added_rows"]:
+                new_row = {col: "" for col in st.session_state.master_df.columns}
+                new_row.update(row)
+                if not new_row["용도"]: new_row["용도"] = "기타"
+                new_row["구분"] = c_map.get(new_row["용도"], "비용")
+                st.session_state.master_df = pd.concat([st.session_state.master_df, pd.DataFrame([new_row])], ignore_index=True)
+            
+            if changes["deleted_rows"]:
+                st.session_state.master_df = st.session_state.master_df.drop(st.session_state.master_df.index[changes["deleted_rows"]]).reset_index(drop=True)
 
-        # 삭제된 행 반영
-        if changes["deleted_rows"]:
-            st.session_state.master_df = st.session_state.master_df.drop(st.session_state.master_df.index[changes["deleted_rows"]]).reset_index(drop=True)
+        st.session_state.needs_download = True
 
-# --- [3] 지능형 분류 (기본 로직) ---
+# --- [3] 지능형 분류 및 정제 로직 ---
 def smart_categorize(content, is_income):
     if is_income: return "입실료"
     text = str(content).upper()
@@ -95,7 +98,7 @@ if st.sidebar.button("📦 새 데이터 합치기"):
     if bank_file and coupang_file:
         try:
             c_map = dict(zip(st.session_state.cat_df['항목명'], st.session_state.cat_df['연결구분']))
-            # 은행 파일 처리
+            # 파일 읽기 로직 (생략 없이 유지)
             if bank_file.name.endswith('.csv'):
                 try: b_df = pd.read_csv(bank_file, encoding='utf-8-sig')
                 except: b_df = pd.read_csv(bank_file, encoding='cp949')
@@ -117,7 +120,6 @@ if st.sidebar.button("📦 새 데이터 합치기"):
                 yd = smart_categorize(content, vi > 0)
                 new_rows.append({"연도":y,"월":m,"날짜":d_d,"내용":content,"용도":yd,"구분":c_map.get(yd,"비용"),"금액":vi if vi>0 else vo,"비고":str(r.get('적요',''))})
             
-            # 쿠팡 처리
             c_df = pd.read_csv(coupang_file)
             for _, r in c_df.iterrows():
                 amt = clean_amt(r.get('총결제금액(원)', 0))
@@ -129,6 +131,7 @@ if st.sidebar.button("📦 새 데이터 합치기"):
             
             if new_rows:
                 st.session_state.master_df = pd.concat([st.session_state.master_df, pd.DataFrame(new_rows)]).drop_duplicates(subset=['날짜','내용','금액'], keep='first').reset_index(drop=True)
+                st.session_state.needs_download = True
                 st.sidebar.success("통합 완료!")
                 st.rerun()
         except Exception as e: st.sidebar.error(f"오류: {e}")
@@ -138,9 +141,21 @@ df = st.session_state.master_df
 all_months = sorted(df['월'].unique()) if not df.empty else []
 tabs = st.tabs(["📊 통합 리포트"] + [f"📅 {m}월 상세" for m in all_months] + ["📝 데이터 편집", "⚙️ 카테고리 설정"])
 
-with tabs[-2]: # 데이터 편집 (행 위치 고정 및 탭 이동 보존 적용)
+with tabs[-1]: # 설정 탭
+    st.subheader("⚙️ 카테고리 영구 저장")
+    st.info("💡 여기서 설정을 저장하면 프로그램을 껐다 켜도 유지됩니다.")
+    edited_cat = st.data_editor(st.session_state.cat_df, num_rows="dynamic", use_container_width=True, key="cat_editor_ui")
+    if st.button("설정 저장 (껐다 켜도 유지)"):
+        st.session_state.cat_df = edited_cat
+        edited_cat.to_csv(CAT_FILE, index=False)
+        c_map = dict(zip(edited_cat['항목명'], edited_cat['연결구분']))
+        st.session_state.master_df['구분'] = st.session_state.master_df['용도'].map(c_map).fillna(st.session_state.master_df['구분'])
+        st.success("설정이 저장되었습니다!")
+        st.rerun()
+
+with tabs[-2]: # 편집 탭 (행 고정 및 탭 이동 데이터 유지의 핵심)
     st.subheader("📝 상세 데이터 편집")
-    st.info("💡 수정 시 해당 행에 그대로 머무릅니다. 다른 탭을 이동해도 작업 내용이 유지됩니다.")
+    st.info("💡 수정 즉시 자동 저장됩니다. 다른 탭을 갔다 오셔도 수정하던 내용이 유지됩니다.")
     
     cat_list = st.session_state.cat_df["항목명"].tolist()
     
@@ -155,22 +170,10 @@ with tabs[-2]: # 데이터 편집 (행 위치 고정 및 탭 이동 보존 적�
             "금액": st.column_config.NumberColumn("금액", format="%d")
         },
         key="master_editor",
-        on_change=on_edit  # 값이 바뀔 때마다 즉시 메모리에 업데이트
+        on_change=on_editor_change  # 수정 즉시 메모리에 박제
     )
 
-with tabs[-1]: # 설정 탭
-    st.subheader("⚙️ 카테고리 영구 저장")
-    edited_cat = st.data_editor(st.session_state.cat_df, num_rows="dynamic", use_container_width=True)
-    if st.button("설정 저장 (껐다 켜도 유지)"):
-        st.session_state.cat_df = edited_cat
-        edited_cat.to_csv(CAT_FILE, index=False)
-        # 기존 데이터 구분값 일괄 업데이트
-        c_map = dict(zip(edited_cat['항목명'], edited_cat['연결구분']))
-        st.session_state.master_df['구분'] = st.session_state.master_df['용도'].map(c_map).fillna(st.session_state.master_df['구분'])
-        st.success("설정이 파일로 저장되었습니다!")
-        st.rerun()
-
-with tabs[0]: # 리포트
+with tabs[0]: # 리포트 (수정된 사항이 즉시 그래프에 반영됨)
     if not df.empty:
         plot_df = df[df['구분'] != '-'].copy()
         if not plot_df.empty:
@@ -180,7 +183,7 @@ with tabs[0]: # 리포트
                 if c not in stats: stats[c] = 0
             st.metric("누적 순이익", f"{(stats['수익'].sum()-stats['비용'].sum()):,}원")
             st.plotly_chart(px.bar(stats, x='월', y=['수익', '비용'], barmode='group', color_discrete_map={'수익': '#00CC96', '비용': '#EF553B'}), use_container_width=True)
-    else: st.info("데이터를 업로드해주세요.")
+    else: st.info("사이드바에서 데이터를 업로드해주세요.")
 
 for i, m in enumerate(all_months):
     with tabs[i+1]: st.dataframe(df[df['월'] == m], use_container_width=True)
