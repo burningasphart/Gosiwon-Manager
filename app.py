@@ -131,6 +131,9 @@ with tabs[-2]:
             "금액": st.column_config.NumberColumn("금액", format="%d")
         }, key="master_editor", on_change=sync_edit)
 
+for i, m in enumerate(all_months):
+    with tabs[i+1]: st.dataframe(df[df['월'] == m], use_container_width=True)
+
 with tabs[-1]:
     st.subheader("⚙️ 설정 저장")
     e_cat = st.data_editor(st.session_state.cat_df, num_rows="dynamic", use_container_width=True, key="cat_editor")
@@ -148,6 +151,3 @@ with tabs[0]:
             st.metric("누적 순이익", f"{(p_df[p_df['구분']=='수익']['금액'].sum() - p_df[p_df['구분']=='비용']['금액'].sum()):,}원")
             st.plotly_chart(px.bar(p_df.groupby(['월', '구분'])['금액'].sum().reset_index(), x='월', y='금액', color='구분', barmode='group'), use_container_width=True)
     else: st.info("파일을 업로드해 주세요.")
-
-for i, m in enumerate(all_months):
-    with tabs[i+1]: st.dataframe(df[df['월'] == m], use_container_
