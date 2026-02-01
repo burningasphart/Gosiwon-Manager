@@ -99,4 +99,4 @@ for i, m in enumerate(all_months):
 with tabs[0]: # 리포트
     if not df.empty:
         st.metric("누적 수익", f"{df[df['구분']=='수익']['금액'].sum():,}원")
-        st.plotly_chart(px.bar(df, x='월', y='금액', color='구분', barmode='group
+        st.plotly_chart(px.bar(df, x='월', y='금액', color='구분', barmode='group'), use_container_width=
