@@ -6,7 +6,7 @@ import re
 
 st.set_page_config(page_title="율곡고시원 통합 관리 시스템", layout="wide")
 
-# --- [1] 세션 초기화 ---
+# --- [1] 세션 초기화 (데이터 유지의 핵심) ---
 if 'cat_df' not in st.session_state:
     st.session_state.cat_df = pd.DataFrame({
         "항목명": ["입실료", "공과금", "식품", "비품", "임대료", "보증금", "인건비", "시설비", "기타"],
@@ -103,44 +103,50 @@ tabs = st.tabs(["📊 통합 리포트"] + [f"📅 {m}월 상세" for m in all_m
 
 with tabs[-1]: # 설정 탭
     st.subheader("⚙️ 카테고리 설정")
-    edited_cat = st.data_editor(st.session_state.cat_df, num_rows="dynamic", use_container_width=True)
+    edited_cat = st.data_editor(st.session_state.cat_df, num_rows="dynamic", use_container_width=True, key="cat_editor")
     if st.button("설정 저장"):
         st.session_state.cat_df = edited_cat
-        # 핵심 업데이트: 설정 저장 시 마스터 데이터의 '구분' 일괄 업데이트
         c_map = dict(zip(edited_cat['항목명'], edited_cat['연결구분']))
         st.session_state.master_df['구분'] = st.session_state.master_df['용도'].map(c_map).fillna(st.session_state.master_df['구분'])
-        st.success("카테고리 설정이 반영되었습니다. 이제 모든 탭의 '구분'이 업데이트됩니다!")
+        st.success("설정이 반영되었습니다!")
         st.rerun()
 
-with tabs[-2]: # 편집 탭
+with tabs[-2]: # 편집 탭 (자동 저장 및 실시간 동기화 적용)
     st.subheader("📝 데이터 편집")
+    st.info("💡 수정 즉시 임시 저장됩니다. 다른 탭을 갔다 오셔도 유지됩니다.")
+    
     cat_list = st.session_state.cat_df["항목명"].tolist()
     c_map = dict(zip(st.session_state.cat_df['항목명'], st.session_state.cat_df['연결구분']))
+    
+    # 데이터 에디터: key 값을 주어 세션에 자동 저장되게 함
     edited = st.data_editor(st.session_state.master_df, use_container_width=True, num_rows="dynamic",
         column_config={
             "용도": st.column_config.SelectboxColumn("용도", options=cat_list, required=True),
             "구분": st.column_config.TextColumn("구분(자동)", disabled=True),
             "금액": st.column_config.NumberColumn("금액", format="%d")
-        })
-    if st.button("💾 장부 최종 저장"):
+        },
+        key="master_editor" 
+    )
+    
+    # 실시간 용도-구분 동기화 로직
+    # 에디터에서 변경이 일어날 때마다 구분 값을 매핑하여 세션에 즉시 반영
+    if not edited.equals(st.session_state.master_df):
         edited['구분'] = edited['용도'].map(c_map).fillna(edited['구분'])
         st.session_state.master_df = edited
         st.session_state.needs_download = True
-        st.success("저장 완료!")
-        st.rerun()
+        st.rerun() # 수정 즉시 화면과 세션을 일치시킴
 
 with tabs[0]: # 리포트 탭
     if not df.empty:
-        # 보정: 설정에서 '-'로 바뀐 항목은 리포트에서 자동 제외
         plot_df = df[df['구분'] != '-'].copy()
         if not plot_df.empty:
             plot_df['금액'] = plot_df['금액'].apply(clean_amt)
             stats = plot_df.groupby(['월', '구분'])['금액'].sum().unstack(fill_value=0).reset_index()
             for c in ['수익', '비용']: 
                 if c not in stats: stats[c] = 0
-            st.metric("누적 순이익 (제외 항목 제외)", f"{(stats['수익'].sum()-stats['비용'].sum()):,}원")
+            st.metric("누적 순이익", f"{(stats['수익'].sum()-stats['비용'].sum()):,}원")
             st.plotly_chart(px.bar(stats, x='월', y=['수익', '비용'], barmode='group', color_discrete_map={'수익': '#00CC96', '비용': '#EF553B'}), use_container_width=True)
-    else: st.info("데이터를 업로드해 주세요.")
+    else: st.info("사이드바에서 파일을 업로드해 주세요.")
 
 for i, m in enumerate(all_months):
     with tabs[i+1]: st.dataframe(df[df['월'] == m], use_container_width=True)
