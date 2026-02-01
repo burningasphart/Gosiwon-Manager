@@ -6,35 +6,26 @@ import re
 
 st.set_page_config(page_title="고시원 누적 정산 시스템", layout="wide")
 
-# --- [중요] 세션 상태 즉시 초기화 로직 ---
-if 'cat_df' not in st.session_state:
-    st.session_state.cat_df = pd.DataFrame({
-        "항목명": ["입실료", "공과금", "식품", "비품", "임대료", "보증금", "인건비", "기타"],
-        "연결구분": ["수익", "비용", "비용", "비용", "비용", "-", "비용", "비용"]
-    })
+# --- [강력 초기화 로직] ---
+# 코드가 바뀌어도 세션이 꼬이지 않도록 필수 키들을 먼저 점검합니다.
+def init_session():
+    if 'cat_df' not in st.session_state or not isinstance(st.session_state.cat_df, pd.DataFrame):
+        st.session_state.cat_df = pd.DataFrame({
+            "항목명": ["입실료", "공과금", "식품", "비품", "임대료", "보증금", "인건비", "기타"],
+            "연결구분": ["수익", "비용", "비용", "비용", "비용", "-", "비용", "비용"]
+        })
+    if 'master_df' not in st.session_state:
+        st.session_state.master_df = pd.DataFrame(columns=["연도", "월", "날짜", "내용", "용도", "구분", "금액", "비고"])
+    if 'history' not in st.session_state:
+        st.session_state.history = [st.session_state.master_df.copy()]
+    if 'history_ptr' not in st.session_state:
+        st.session_state.history_ptr = 0
+    if 'needs_download' not in st.session_state:
+        st.session_state.needs_download = False
 
-if 'master_df' not in st.session_state:
-    st.session_state.master_df = pd.DataFrame(columns=["연도", "월", "날짜", "내용", "용도", "구분", "금액", "비고"])
+init_session()
 
-if 'history' not in st.session_state:
-    st.session_state.history = [st.session_state.master_df.copy()]
-
-if 'history_ptr' not in st.session_state:
-    st.session_state.history_ptr = 0
-
-if 'needs_download' not in st.session_state:
-    st.session_state.needs_download = False
-
-# 히스토리 기록 함수
-def save_history(df):
-    st.session_state.history = st.session_state.history[:st.session_state.history_ptr + 1]
-    st.session_state.history.append(df.copy())
-    st.session_state.history_ptr += 1
-    if len(st.session_state.history) > 20:
-        st.session_state.history.pop(0)
-        st.session_state.history_ptr -= 1
-
-# 숫자/날짜 정제 함수 (기존과 동일)
+# 숫자/날짜 정제 함수
 def clean_amt(x):
     try:
         if pd.isna(x) or str(x).strip() == "": return 0
@@ -54,7 +45,15 @@ def clean_date(date_val):
         return "2026", "01", "01/01"
     except: return "2026", "01", "01/01"
 
-st.title("🏠 고시원 누적 정산 시스템 (대표님 전용)")
+def save_history(df):
+    st.session_state.history = st.session_state.history[:st.session_state.history_ptr + 1]
+    st.session_state.history.append(df.copy())
+    st.session_state.history_ptr += 1
+    if len(st.session_state.history) > 20:
+        st.session_state.history.pop(0)
+        st.session_state.history_ptr -= 1
+
+st.title("🏠 고시원 누적 정산 시스템")
 
 # --- 사이드바 ---
 st.sidebar.header("📂 데이터 관리")
@@ -73,10 +72,9 @@ coupang_file = st.sidebar.file_uploader("쿠팡 구매내역", type=['csv'])
 if st.sidebar.button("📦 새 데이터 합치기"):
     if bank_file and coupang_file:
         try:
-            # 카테고리 정보 안전하게 가져오기
+            # 카테고리 맵을 버튼 클릭 시점에 다시 생성 (에러 방지)
             cat_map = st.session_state.cat_df.set_index("항목명")["연결구분"].to_dict()
-            default_gubun = cat_map.get("기타", "비용")
-
+            
             if bank_file.name.endswith('.csv'): bank_df = pd.read_csv(bank_file, skiprows=3)
             else:
                 bank_file.seek(0)
@@ -96,49 +94,49 @@ if st.sidebar.button("📦 새 데이터 합치기"):
                 y, m, d_d = clean_date(r.get('거래일시'))
                 vi, vo = clean_amt(r.get('맡기신금액', 0)), clean_amt(r.get('찾으신금액', 0))
                 content = (str(r.get('기재내용', '')) + " " + str(r.get('적요', ''))).strip()
-                new_rows.append({"연도": y, "월": m, "날짜": d_d, "내용": content, "용도": "기타", "구분": default_gubun, "금액": vi if vi > 0 else vo, "비고": str(r.get('적요', ''))})
+                new_rows.append({"연도": y, "월": m, "날짜": d_d, "내용": content, "용도": "기타", "구분": cat_map.get("기타", "비용"), "금액": vi if vi > 0 else vo, "비고": str(r.get('적요', ''))})
             
             for _, r in coupang_df.iterrows():
                 price = clean_amt(r.get('총결제금액(원)', 0))
                 if price > 0:
                     y, m, d_d = clean_date(r.get('주문일', ''))
-                    new_rows.append({"연도": y, "월": m, "날짜": d_d, "내용": str(r.get('상품명', '')), "용도": "기타", "구분": default_gubun, "금액": price, "비고": "쿠팡구매"})
+                    new_rows.append({"연도": y, "월": m, "날짜": d_d, "내용": str(r.get('상품명', '')), "용도": "기타", "구분": cat_map.get("기타", "비용"), "금액": price, "비고": "쿠팡구매"})
             
             new_df = pd.DataFrame(new_rows)
             combined = pd.concat([st.session_state.master_df, new_df]).drop_duplicates(subset=['날짜', '내용', '금액'], keep='first')
             st.session_state.master_df = combined
             save_history(combined)
             st.session_state.needs_download = True
-            st.sidebar.success("통합 완료")
-        except Exception as e: st.sidebar.error(f"오류: {e}")
+            st.sidebar.success("통합 완료!")
+        except Exception as e: st.sidebar.error(f"오류 발생: {e}")
 
 st.sidebar.divider()
 include_misc = st.sidebar.checkbox("사업 수익에 '기타' 지출 포함하기", value=False)
 
+# 저장 알림
 if st.session_state.needs_download:
-    st.warning("⚠️ 데이터가 변경되었습니다. 저장하시겠습니까?")
-    st.download_button("✅ 지금 파일로 저장", st.session_state.master_df.to_csv(index=False).encode('utf-8-sig'), f"고시원_장부_{time.strftime('%Y%m%d')}.csv", "text/csv", on_click=lambda: st.session_state.update({"needs_download": False}))
+    st.warning("⚠️ 저장하지 않은 데이터가 있습니다.")
+    st.download_button("✅ 지금 저장", st.session_state.master_df.to_csv(index=False).encode('utf-8-sig'), f"고시원_장부_{time.strftime('%Y%m%d')}.csv", "text/csv", on_click=lambda: st.session_state.update({"needs_download": False}))
 
-# --- 메인 탭 ---
+# 메인 화면
 df = st.session_state.master_df
 all_months = sorted(df['월'].unique()) if not df.empty else []
 tabs = st.tabs(["📊 통합 리포트"] + [f"📅 {m}월 상세" for m in all_months] + ["📝 데이터 편집", "⚙️ 카테고리 설정"])
 
 with tabs[-1]: # 카테고리 설정
-    st.subheader("⚙️ 용도 및 계산 방식 설정")
+    st.subheader("⚙️ 용도 설정")
     edited_cat = st.data_editor(st.session_state.cat_df, num_rows="dynamic", use_container_width=True,
         column_config={"연결구분": st.column_config.SelectboxColumn("구분 방식", options=["수익", "비용", "-"], required=True)})
-    if st.button("🛠 설정 반영하기"):
+    if st.button("🛠 설정 반영"):
         st.session_state.cat_df = edited_cat
         cat_map = edited_cat.set_index("항목명")["연결구분"].to_dict()
         st.session_state.master_df['구분'] = st.session_state.master_df['용도'].map(cat_map).fillna(st.session_state.master_df['구분'])
-        st.success("카테고리 설정 및 기존 데이터 업데이트 완료!")
+        st.success("설정 완료!")
         st.rerun()
 
 with tabs[-2]: # 데이터 편집
-    st.subheader("📝 데이터 상세 편집")
+    st.subheader("📝 데이터 편집")
     cat_map = st.session_state.cat_df.set_index("항목명")["연결구분"].to_dict()
-    
     col1, col2, _ = st.columns([1, 1, 5])
     with col1:
         if st.button("⬅️ 이전"):
@@ -156,11 +154,11 @@ with tabs[-2]: # 데이터 편집
     edited = st.data_editor(st.session_state.master_df, use_container_width=True, num_rows="dynamic",
         column_config={
             "용도": st.column_config.SelectboxColumn("용도", options=st.session_state.cat_df["항목명"].tolist(), required=True),
-            "구분": st.column_config.TextColumn("구분 (자동)", disabled=True),
+            "구분": st.column_config.TextColumn("구분", disabled=True),
             "금액": st.column_config.NumberColumn("금액", format="%d")
         })
     
-    if st.button("💾 편집 내용 저장"):
+    if st.button("💾 최종 저장"):
         edited['구분'] = edited['용도'].map(cat_map).fillna(edited['구분'])
         st.session_state.master_df = edited
         save_history(edited)
@@ -172,6 +170,7 @@ with tabs[0]: # 통합 리포트
     if not df.empty:
         df_plot = st.session_state.master_df.copy()
         df_plot['금액'] = df_plot['금액'].apply(clean_amt)
+        # 설정된 구분 방식에 따라 필터링
         plot_df = df_plot[df_plot['구분'] != '-'].copy()
         if not include_misc: plot_df = plot_df[plot_df['용도'] != '기타']
         
