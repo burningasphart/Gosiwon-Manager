@@ -4,4 +4,4 @@ plotly
 xlrd
 openpyxl
 lxml
-pyxlsb
+html5lib
