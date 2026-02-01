@@ -15,25 +15,24 @@ def clean_amt(x):
     except:
         return 0
 
-# 날짜 정제 함수 (대표님 요청 사항: 날짜 이상한 것 수정)
+# 날짜 정제 함수 (대표님 요청: 날짜 이상하게 나오는 현상 수정)
 def clean_date(date_val):
     try:
         d = str(date_val).strip()
-        # 숫자와 구분자(. / -)만 남기기
-        d = re.sub(r'[^0-9./-]', ' ', d).split()[0] 
-        # 구분자 통일
+        # 숫자와 구분자만 남기고 다 제거
+        d = re.sub(r'[^0-9./-]', ' ', d).split()[0]
+        # 구분자를 하이픈(-)으로 통일
         d = d.replace('.', '-').replace('/', '-')
         
-        # 연도-월-일 추출
         parts = d.split('-')
         if len(parts) >= 3:
-            year = parts[0]
-            month = parts[1].zfill(2)
-            day = parts[2].zfill(2)
-            return f"{year}", f"{month}", f"{month}-{day}"
-        return "0000", "00", "00-00"
+            y = parts[0] # 연도
+            m = parts[1].zfill(2) # 월 (한자리일 경우 0 붙임)
+            d_val = parts[2].zfill(2) # 일
+            return y, m, f"{m}/{d_val}"
+        return "2026", "01", "01/01"
     except:
-        return "0000", "00", "00-00"
+        return "2026", "01", "01/01"
 
 # 자동 카테고리 로직
 def auto_categorize(content, income, outcome):
@@ -62,7 +61,7 @@ if st.sidebar.button("과거 기록 불러오기") and prev_master:
         st.session_state.master_df = pd.read_csv(prev_master)
         st.sidebar.success("과거 기록 로드 완료")
     except Exception as e:
-        st.sidebar.error(f"파일 읽기 오류: {e}")
+        st.sidebar.error(f"오류: {e}")
 
 st.sidebar.divider()
 st.sidebar.header("📂 2. 이번 달 새 데이터")
@@ -99,25 +98,23 @@ if st.sidebar.button("📦 새 데이터 정리/합치기"):
                 raw_date = row.get('거래일시')
                 if pd.isna(raw_date): continue
                 
-                year, month, day_str = clean_date(raw_date) # 날짜 보정 적용
-                if year == "0000": continue
-
-                v_in, v_out = clean_amt(row.get('맡기신금액', 0)), clean_amt(row.get('찾으신금액', 0))
+                y, m, d_display = clean_date(raw_date)
+                v_in = clean_amt(row.get('맡기신금액', 0))
+                v_out = clean_amt(row.get('찾으신금액', 0))
                 v_sum, v_memo = str(row.get('적요', '')), str(row.get('기재내용', ''))
                 
                 if "쿠팡" in v_sum or "쿠팡" in v_memo: continue
                 content = (v_memo + " " + v_sum).strip()
                 gubun, yongdo = auto_categorize(content, v_in, v_out)
                 if v_in == 0 and v_out == 0: continue
-                
-                new_rows.append({"연도": year, "월": month, "날짜": day_str, "내용": content, "용도": yongdo, "구분": gubun, "금액": v_in if gubun=="수익" else v_out, "비고": v_sum})
+                new_rows.append({"연도": y, "월": m, "날짜": d_display, "내용": content, "용도": yongdo, "구분": gubun, "금액": v_in if gubun=="수익" else v_out, "비고": v_sum})
             
             for _, row in coupang_df.iterrows():
                 price = clean_amt(row.get('총결제금액(원)', 0))
                 if price == 0: continue
                 _, yongdo = auto_categorize(row.get('상품명', ''), 0, price)
-                year, month, day_str = clean_date(row.get('주문일', '')) # 날짜 보정 적용
-                new_rows.append({"연도": year, "월": month, "날짜": day_str, "내용": row.get('상품명', ''), "용도": yongdo, "구분": "비용", "금액": price, "비고": "쿠팡구매"})
+                y, m, d_display = clean_date(row.get('주문일', ''))
+                new_rows.append({"연도": y, "월": m, "날짜": d_display, "내용": row.get('상품명', ''), "용도": yongdo, "구분": "비용", "금액": price, "비고": "쿠팡구매"})
             
             new_df = pd.DataFrame(new_rows)
             if st.session_state.master_df.empty:
@@ -126,13 +123,15 @@ if st.sidebar.button("📦 새 데이터 정리/합치기"):
                 st.session_state.master_df = pd.concat([st.session_state.master_df, new_df]).drop_duplicates(subset=['날짜', '내용', '금액'], keep='first')
             
             st.session_state.needs_download = True
-            st.sidebar.success("날짜 보정 및 정리 완료!")
+            st.sidebar.success("정리 완료!")
         except Exception as e:
             st.sidebar.error(f"오류: {e}")
     else:
         st.sidebar.warning("파일을 먼저 올려주세요.")
 
-# (이후 저장 알림 및 대시보드 코드는 이전과 동일)
+st.sidebar.divider()
+include_misc = st.sidebar.checkbox("사업 수익에 '기타' 지출 포함하기", value=False)
+
 if st.session_state.needs_download:
     st.warning("⚠️ 장부에 변경사항이 있습니다. 저장하시겠습니까?")
     st.download_button(label="✅ 지금 파일로 저장", data=st.session_state.master_df.to_csv(index=False).encode('utf-8-sig'), file_name=f"고시원_장부_{time.strftime('%Y%m%d')}.csv", mime="text/csv", on_click=lambda: st.session_state.update({"needs_download": False}))
@@ -140,4 +139,36 @@ if st.session_state.needs_download:
 df = st.session_state.master_df
 if not df.empty:
     all_months = sorted(df['월'].unique())
-    tabs = st.tabs(["📊 통합 리포트"] + [f"📅 {m}월 상세" for m
+    tabs = st.tabs(["📊 통합 리포트"] + [f"📅 {m}월 상세" for m in all_months] + ["📝 편집/현금추가"])
+    
+    with tabs[0]:
+        df['금액'] = df['금액'].apply(clean_amt)
+        plot_df = df[df['용도'] != '보증금'].copy()
+        if not include_misc: plot_df = plot_df[plot_df['용도'] != '기타']
+        
+        if not plot_df.empty:
+            stats = plot_df.groupby(['월', '구분'])['금액'].sum().unstack(fill_value=0).reset_index()
+            for col in ['수익', '비용']:
+                if col not in stats: stats[col] = 0
+            stats['순이익'] = stats['수익'] - stats['비용']
+            c1, c2, c3 = st.columns(3)
+            c1.metric("누적 수입", f"{stats['수익'].sum():,}원")
+            c2.metric("누적 지출", f"{stats['비용'].sum():,}원")
+            c3.metric("누적 순이익", f"{(stats['수익'].sum() - stats['비용'].sum()):,}원")
+            fig = px.bar(stats, x='월', y=['수익', '비용'], barmode='group', text_auto=',.0f', color_discrete_map={'수익': '#00CC96', '비용': '#EF553B'})
+            st.plotly_chart(fig, use_container_width=True)
+    
+    for i, m in enumerate(all_months):
+        with tabs[i+1]:
+            st.dataframe(df[df['월'] == m], use_container_width=True)
+
+    with tabs[-1]:
+        edited = st.data_editor(st.session_state.master_df, use_container_width=True, num_rows="dynamic")
+        if st.button("💾 편집 내용 저장하기"):
+            st.session_state.master_df = edited
+            st.session_state.needs_download = True
+            st.rerun()
+else:
+    st.info("파일을 업로드하고 버튼을 눌러주세요.")
+
+st.sidebar.download_button("📥 통합 장부 다운로드", st.session_state.master_df.to_csv(index=False).encode('utf-8-sig'), "고시원_마스터.csv", "text/csv")
