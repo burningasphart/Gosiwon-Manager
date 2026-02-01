@@ -53,6 +53,18 @@ def clean_date(date_val):
     except:
         return time.strftime("%Y"), time.strftime("%m"), time.strftime("%m/%d")
 
+# 핵심: 똑똑한 카테고리 자동 매칭 함수
+def smart_categorize(content, is_income):
+    if is_income: return "입실료"
+    content = str(content)
+    if '보증금' in content: return "보증금"
+    if any(k in content for k in ['전기', '수도', '예스코', '가스', '한전', '공과금']): return "공과금"
+    if any(k in content for k in ['쌀', '라면', '우유', '커피', '식료', '아몬드']): return "식품"
+    if any(k in content for k in ['다이소', '비품', '세제', '휴지', '점보롤', '타월']): return "비품"
+    if '임대료' in content: return "임대료"
+    if '인건비' in content: return "인건비"
+    return "기타"
+
 st.title("🏠 고시원 누적 정산 시스템")
 
 # --- [3] 사이드바 ---
@@ -88,7 +100,6 @@ if st.sidebar.button("📦 새 데이터 합치기"):
                     bank_file.seek(0)
                     bank_df = pd.read_excel(bank_file)
 
-            # 헤더 찾기
             h_idx = 0
             for i in range(min(20, len(bank_df))):
                 if '거래일시' in "".join(bank_df.iloc[i].astype(str)):
@@ -96,7 +107,6 @@ if st.sidebar.button("📦 새 데이터 합치기"):
             bank_df.columns = bank_df.iloc[h_idx]
             bank_df = bank_df.iloc[h_idx+1:].reset_index(drop=True)
             
-            # 데이터 가공
             new_rows = []
             for _, r in bank_df.iterrows():
                 if pd.isna(r.get('거래일시')): continue
@@ -104,7 +114,10 @@ if st.sidebar.button("📦 새 데이터 합치기"):
                 vi, vo = clean_amt(r.get('맡기신금액', 0)), clean_amt(r.get('찾으신금액', 0))
                 content = (str(r.get('기재내용','')) + " " + str(r.get('적요',''))).replace('nan','').strip()
                 if "쿠팡" in content: continue
-                new_rows.append({"연도":y,"월":m,"날짜":d_d,"내용":content,"용도":"기타","구분":cat_map.get("기타","비용"),"금액":vi if vi>0 else vo,"비고":str(r.get('적요',''))})
+                
+                # 지능형 카테고리 적용
+                yongdo = smart_categorize(content, vi > 0)
+                new_rows.append({"연도":y,"월":m,"날짜":d_d,"내용":content,"용도":yongdo,"구분":cat_map.get(yongdo,"비용"),"금액":vi if vi>0 else vo,"비고":str(r.get('적요',''))})
 
             # 쿠팡 가공
             coupang_df = pd.read_csv(coupang_file)
@@ -112,7 +125,9 @@ if st.sidebar.button("📦 새 데이터 합치기"):
                 amt = clean_amt(r.get('총결제금액(원)', 0))
                 if amt > 0:
                     y, m, d_d = clean_date(r.get('주문일',''))
-                    new_rows.append({"연도":y,"월":m,"날짜":d_d,"내용":str(r.get('상품명','')),"용도":"기타","구분":cat_map.get("기타","비용"),"금액":amt,"비고":"쿠팡구매"})
+                    p_name = str(r.get('상품명',''))
+                    yongdo = smart_categorize(p_name, False)
+                    new_rows.append({"연도":y,"월":m,"날짜":d_d,"내용":p_name,"용도":yongdo,"구분":cat_map.get(yongdo,"비용"),"금액":amt,"비고":"쿠팡구매"})
             
             if new_rows:
                 new_df = pd.DataFrame(new_rows)
@@ -142,7 +157,7 @@ with tabs[-1]: # 카테고리 설정
         st.session_state.cat_df = edited_cat
         c_map = dict(zip(edited_cat['항목명'], edited_cat['연결구분']))
         st.session_state.master_df['구분'] = st.session_state.master_df['용도'].map(c_map).fillna(st.session_state.master_df['구분'])
-        st.success("카테고리 설정 완료!")
+        st.success("설정 완료!")
         st.rerun()
 
 with tabs[-2]: # 데이터 편집
