@@ -3,19 +3,18 @@ import pandas as pd
 import plotly.express as px
 import io
 
-st.set_page_config(page_title="고시원 통합 정산", layout="wide")
+st.set_page_config(page_title="고시원 정산 시스템", layout="wide")
 
-# 숫자 정제 함수: 콤마와 문자 제거 후 숫자로 변환
+# 숫자 정제: 문자열에서 숫자만 추출 (콤마, 원화기호 등 완벽 제거)
 def clean_amt(x):
     try:
         if pd.isna(x): return 0
-        s = str(x).replace(',', '').replace('₩', '').split('.')[0]
-        s = "".join(filter(str.isdigit, s))
+        s = "".join(filter(str.isdigit, str(x).split('.')[0]))
         return int(s) if s else 0
     except:
         return 0
 
-# 자동 카테고리 로직 (대표님 맞춤형)
+# 자동 카테고리 로직 (대표님 분류 기준)
 def auto_categorize(content, income, outcome):
     if income > 0: return "수익", "입실료"
     content = str(content)
@@ -33,51 +32,79 @@ bank_file = st.sidebar.file_uploader("우리은행 거래내역 (XLS/CSV)", type
 coupang_file = st.sidebar.file_uploader("쿠팡 구매내역 (CSV)", type=['csv'])
 
 if bank_file and coupang_file:
-    # --- 1. 우리은행 데이터 읽기 (대표님 양식 맞춤형) ---
+    # --- 1. 은행 데이터 읽기 (강력한 예외 처리) ---
+    bank_df = None
     try:
         if bank_file.name.endswith('.csv'):
-            bank_df = pd.read_csv(bank_file, skiprows=3)
-        else:
-            bank_file.seek(0)
+            # CSV의 경우 다양한 인코딩 시도
             try:
-                # 우리은행 전용 HTML-XLS 방식 시도
-                html_list = pd.read_html(bank_file)
-                bank_df = html_list[0]
+                bank_df = pd.read_csv(bank_file, encoding='utf-8-sig')
             except:
-                # 일반 엑셀 방식 시도
+                bank_file.seek(0)
+                bank_df = pd.read_csv(bank_file, encoding='cp949')
+        else:
+            # XLS/XLSX의 경우 (HTML 방식 포함)
+            try:
+                bank_file.seek(0)
+                dfs = pd.read_html(bank_file)
+                bank_df = max(dfs, key=len) # 가장 표다운 것을 선택
+            except:
                 bank_file.seek(0)
                 bank_df = pd.read_excel(bank_file)
 
-        # '거래일시' 글자가 들어있는 줄을 찾아서 헤더로 설정
-        header_row = 0
+        # 진짜 제목 줄(Header) 찾기
+        header_idx = None
         for i in range(len(bank_df)):
-            if '거래일시' in str(bank_df.iloc[i].values):
-                header_row = i
+            row_str = bank_df.iloc[i].astype(str).tolist()
+            if any('거래일시' in s or '적요' in s for s in row_str):
+                header_idx = i
                 break
         
-        bank_df.columns = bank_df.iloc[header_row]
-        bank_df = bank_df.iloc[header_row+1:].reset_index(drop=True)
-        # 데이터가 없는 빈 줄 삭제
-        bank_df = bank_df.dropna(subset=['거래일시'])
+        if header_idx is not None:
+            bank_df.columns = bank_df.iloc[header_idx]
+            bank_df = bank_df.iloc[header_idx+1:].reset_index(drop=True)
+        
+        # 열 이름 정리 (공백 제거)
+        bank_df.columns = [str(c).strip() for c in bank_df.columns]
+        # 데이터 없는 행 삭제
+        bank_df = bank_df.dropna(subset=[bank_df.columns[1]]) 
 
     except Exception as e:
-        st.error(f"은행 파일을 읽지 못했습니다. 에러: {e}")
+        st.error(f"은행 파일 분석 중 오류가 발생했습니다. (에러: {e})")
         st.stop()
 
     # --- 2. 쿠팡 데이터 읽기 ---
-    coupang_df = pd.read_csv(coupang_file)
+    try:
+        coupang_file.seek(0)
+        coupang_df = pd.read_csv(coupang_file, encoding='utf-8-sig')
+    except:
+        coupang_file.seek(0)
+        coupang_df = pd.read_csv(coupang_file, encoding='cp949')
+    
     combined_list = []
 
-    # --- 3. 은행 데이터 정리 ---
+    # --- 3. 은행 데이터 처리 (위치 기반으로 더 안전하게) ---
+    cols = list(bank_df.columns)
+    def find_col(keywords):
+        for i, c in enumerate(cols):
+            if any(k in str(c) for k in keywords): return i
+        return -1
+
+    idx_date = find_col(['일시'])
+    idx_sum = find_col(['적요'])
+    idx_memo = find_col(['기재', '내용'])
+    idx_out = find_col(['찾으신'])
+    idx_in = find_col(['맡기신'])
+
     for _, row in bank_df.iterrows():
-        # 열 이름을 정확히 매칭 (앞뒤 공백 제거)
-        row.index = row.index.str.strip()
+        # 필수 데이터가 없는 경우 건너뜀
+        if idx_date == -1: continue
         
-        v_in = clean_amt(row.get('맡기신금액', 0))
-        v_out = clean_amt(row.get('찾으신금액', 0))
-        v_sum = str(row.get('적요', ''))
-        v_memo = str(row.get('기재내용', ''))
-        v_date = str(row.get('거래일시', ''))
+        v_in = clean_amt(row.iloc[idx_in]) if idx_in != -1 else 0
+        v_out = clean_amt(row.iloc[idx_out]) if idx_out != -1 else 0
+        v_sum = str(row.iloc[idx_sum]) if idx_sum != -1 else ""
+        v_memo = str(row.iloc[idx_memo]) if idx_memo != -1 else ""
+        v_date = str(row.iloc[idx_date])
 
         if "쿠팡" in v_sum or "쿠팡" in v_memo: continue
         
@@ -97,7 +124,7 @@ if bank_file and coupang_file:
             "비고": v_sum
         })
 
-    # --- 4. 쿠팡 데이터 정리 ---
+    # --- 4. 쿠팡 데이터 처리 ---
     for _, row in coupang_df.iterrows():
         price = clean_amt(row.get('총결제금액(원)', 0))
         _, yongdo = auto_categorize(row.get('상품명', ''), 0, price)
@@ -114,20 +141,20 @@ if bank_file and coupang_file:
 
     final_df = pd.DataFrame(combined_list)
 
-    # --- 5. 화면 출력 (테이블 및 차트) ---
+    # --- 5. 결과 출력 및 대시보드 ---
     st.subheader("📋 통합 장부 정리 (대표님 전용)")
-    st.info("💡 대표님, 수정이 필요한 내용은 표에서 바로 클릭하여 고칠 수 있습니다.")
     edited_df = st.data_editor(final_df, use_container_width=True, num_rows="dynamic")
 
     st.divider()
     c1, c2 = st.columns(2)
     with c1:
-        st.subheader("📊 수익 vs 비용 현황")
+        st.subheader("📊 수입 vs 비용")
         st.plotly_chart(px.bar(edited_df.groupby('구분')['금액'].sum().reset_index(), x='구분', y='금액', color='구분', text_auto=',.0f'), use_container_width=True)
     with c2:
         st.subheader("💸 항목별 지출 비중")
         st.plotly_chart(px.pie(edited_df[edited_df['구분']=='비용'], values='금액', names='용도', hole=0.4), use_container_width=True)
 
-    st.download_button("💾 최종 결과 저장(CSV)", edited_df.to_csv(index=False).encode('utf-8-sig'), "고시원_정산_결과.csv", "text/csv")
+    st.download_button("💾 결과 저장(CSV)", edited_df.to_csv(index=False).encode('utf-8-sig'), "고시원_정산_결과.csv", "text/csv")
+
 else:
-    st.info("대표님, 왼쪽에서 은행 파일과 쿠팡 파일을 업로드해 주세요.")
+    st.info("대표님, 왼쪽 사이드바에서 은행과 쿠팡 파일을 업로드해 주세요.")
