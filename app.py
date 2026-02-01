@@ -27,14 +27,14 @@ def auto_categorize(content, income, outcome):
 
 st.title("🏠 고시원 누적 정산 시스템 (대표님 전용)")
 
-# --- 세션 상태 보존 (에러 방지를 위해 컬럼명 미리 정의) ---
+# 세션 상태 초기화
 if 'master_df' not in st.session_state:
     st.session_state.master_df = pd.DataFrame(columns=["연도", "월", "날짜", "내용", "용도", "구분", "금액", "비고"])
 if 'needs_download' not in st.session_state:
     st.session_state.needs_download = False
 
 # --- 사이드바 ---
-st.sidebar.header("📂 1. 기존 기록 (있을 때만)")
+st.sidebar.header("📂 1. 기존 기록 불러오기")
 prev_master = st.sidebar.file_uploader("과거 장부 파일(.csv)", type=['csv'])
 
 if st.sidebar.button("과거 기록 불러오기") and prev_master:
@@ -72,12 +72,10 @@ if st.sidebar.button("📦 새 데이터 정리/합치기"):
             bank_df.columns = bank_df.iloc[header_row]
             bank_df = bank_df.iloc[header_row+1:].reset_index(drop=True)
             
-            # 쿠팡 데이터 처리
             coupang_file.seek(0)
             coupang_df = pd.read_csv(coupang_file)
             
             new_rows = []
-            # 은행 행 가공
             for _, row in bank_df.iterrows():
                 v_date = str(row.get('거래일시', ''))
                 if pd.isna(row.get('거래일시')) or v_date == 'nan' or len(v_date) < 10: continue
@@ -88,14 +86,11 @@ if st.sidebar.button("📦 새 데이터 정리/합치기"):
                 v_memo = str(row.get('기재내용', ''))
                 
                 if "쿠팡" in v_sum or "쿠팡" in v_memo: continue
-                
                 content = (v_memo + " " + v_sum).strip()
                 gubun, yongdo = auto_categorize(content, v_in, v_out)
                 if v_in == 0 and v_out == 0: continue
-
                 new_rows.append({"연도": v_date[:4], "월": v_date[5:7], "날짜": v_date[5:10], "내용": content, "용도": yongdo, "구분": gubun, "금액": v_in if gubun=="수익" else v_out, "비고": v_sum})
             
-            # 쿠팡 행 가공
             for _, row in coupang_df.iterrows():
                 price = clean_amt(row.get('총결제금액(원)', 0))
                 if price == 0: continue
@@ -104,24 +99,22 @@ if st.sidebar.button("📦 새 데이터 정리/합치기"):
                 new_rows.append({"연도": date_val[:4], "월": date_val[6:8], "날짜": date_val[6:11].replace('. ','/'), "내용": row.get('상품명', ''), "용도": yongdo, "구분": "비용", "금액": price, "비고": "쿠팡구매"})
             
             new_df = pd.DataFrame(new_rows)
-            
-            # 합치기 (비어있어도 에러 안 나게 처리)
             if st.session_state.master_df.empty:
                 st.session_state.master_df = new_df
             else:
                 st.session_state.master_df = pd.concat([st.session_state.master_df, new_df]).drop_duplicates(subset=['날짜', '내용', '금액'], keep='first')
             
             st.session_state.needs_download = True
-            st.sidebar.success("정리 완료! 리포트를 확인하세요.")
+            st.sidebar.success("정리 완료!")
         except Exception as e:
-            st.sidebar.error(f"처리 중 오류 발생: {e}")
+            st.sidebar.error(f"오류: {e}")
     else:
-        st.sidebar.warning("파일을 먼저 업로드해 주세요.")
+        st.sidebar.warning("파일을 올려주세요.")
 
 st.sidebar.divider()
 include_misc = st.sidebar.checkbox("사업 수익에 '기타' 지출 포함하기", value=False)
 
-# --- 상단 저장 알림 ---
+# 저장 알림
 if st.session_state.needs_download:
     st.warning("⚠️ 변경사항이 있습니다. 현재 상태를 저장하시겠습니까?")
     st.download_button(
@@ -129,4 +122,43 @@ if st.session_state.needs_download:
         data=st.session_state.master_df.to_csv(index=False).encode('utf-8-sig'),
         file_name=f"고시원_장부_{time.strftime('%Y%m%d')}.csv",
         mime="text/csv",
-        on_click=lambda: st.session_state.update({"needs
+        on_click=lambda: st.session_state.update({"needs_download": False})
+    )
+
+# 메인 화면
+df = st.session_state.master_df
+if not df.empty:
+    all_months = sorted(df['월'].unique())
+    tabs = st.tabs(["📊 통합 리포트"] + [f"📅 {m}월 상세" for m in all_months] + ["📝 편집/현금추가"])
+    
+    with tabs[0]:
+        df['금액'] = df['금액'].apply(clean_amt)
+        plot_df = df[df['용도'] != '보증금'].copy()
+        if not include_misc: plot_df = plot_df[plot_df['용도'] != '기타']
+        
+        if not plot_df.empty:
+            stats = plot_df.groupby(['월', '구분'])['금액'].sum().unstack(fill_value=0).reset_index()
+            for col in ['수익', '비용']:
+                if col not in stats: stats[col] = 0
+            stats['순이익'] = stats['수익'] - stats['비용']
+            c1, c2, c3 = st.columns(3)
+            c1.metric("누적 수입", f"{stats['수익'].sum():,}원")
+            c2.metric("누적 지출", f"{stats['비용'].sum():,}원")
+            c3.metric("누적 순이익", f"{(stats['수익'].sum() - stats['비용'].sum()):,}원")
+            fig = px.bar(stats, x='월', y=['수익', '비용'], barmode='group', text_auto=',.0f', color_discrete_map={'수익': '#00CC96', '비용': '#EF553B'})
+            st.plotly_chart(fig, use_container_width=True)
+    
+    for i, m in enumerate(all_months):
+        with tabs[i+1]:
+            st.dataframe(df[df['월'] == m], use_container_width=True)
+
+    with tabs[-1]:
+        edited = st.data_editor(st.session_state.master_df, use_container_width=True, num_rows="dynamic")
+        if st.button("💾 편집 내용 저장하기"):
+            st.session_state.master_df = edited
+            st.session_state.needs_download = True
+            st.rerun()
+else:
+    st.info("파일을 업로드하고 [새 데이터 정리/합치기]를 눌러주세요.")
+
+st.sidebar.download_button("📥 통합 장부 다운로드", st.session_state.master_df.to_csv(index=False).encode('utf-8-sig'), "고시원_마스터.csv", "text/csv")
