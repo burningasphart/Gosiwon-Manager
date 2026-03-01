@@ -21,7 +21,6 @@ def load_data():
         except: pass
     return pd.DataFrame(columns=["연도", "월", "날짜", "사업장", "내용", "용도", "구분", "금액", "비고"])
 
-# 세션 초기화
 if 'master_df' not in st.session_state:
     st.session_state.master_df = load_data()
 if 'temp_df' not in st.session_state:
@@ -52,8 +51,8 @@ def process_bank(file, biz_name):
         for _, r in df.iterrows():
             if pd.isna(r.get('거래일시')): continue
             y, m, d = std_date(r.get('거래일시'))
-            vi = int(str(r.get('맡기신금액',0)).replace(',','').split('.')[0] or 0)
-            vo = int(str(r.get('찾으신금액',0)).replace(',','').split('.')[0] or 0)
+            vi = int(str(r.get('맡기신금액',0)).replace(',','').strip() or 0)
+            vo = int(str(r.get('찾으신금액',0)).replace(',','').strip() or 0)
             yd = "입실료" if vi > 0 else "기타"
             rows.append({"연도":y, "월":m, "날짜":d, "사업장":biz_name, "내용":str(r.get('기재내용','')).strip(), "용도":yd, "구분":c_map.get(yd, "비용"), "금액":vi if vi>0 else vo, "비고":""})
         return rows
@@ -77,7 +76,7 @@ with st.sidebar:
                 cdf = pd.read_csv(cf, encoding='utf-8-sig')
                 for _, r in cdf.iterrows():
                     y, m, d = std_date(r.get('주문일',''))
-                    amt = int(str(r.get('총결제금액(원)',0)).replace(',','').split('.')[0] or 0)
+                    amt = int(str(r.get('총결제금액(원)',0)).replace(',','').strip() or 0)
                     new_data.append({"연도":y,"월":m,"날짜":d,"사업장":"미분류(쿠팡)","내용":str(r.get('상품명','')),"용도":"기타","구분":"비용","금액":amt,"비고":"쿠팡"})
             except: pass
         if new_data:
@@ -88,11 +87,10 @@ t1, t2, t3 = st.tabs(["📊 리포트", "📝 장부 통합 편집", "⚙️ 설
 
 with t2:
     st.subheader("📝 상세 필터링 및 편집")
-    # 편집할 데이터 소스 결정 (새로 올린 것 우선)
     target_df = st.session_state.temp_df if not st.session_state.temp_df.empty else st.session_state.master_df
     
     if not target_df.empty:
-        # --- [필터링 UI] ---
+        # 필터 UI
         f_col = st.columns(5)
         with f_col[0]: s_biz = st.multiselect("사업장", target_df['사업장'].unique(), default=target_df['사업장'].unique())
         with f_col[1]: s_year = st.multiselect("연도", target_df['연도'].unique(), default=target_df['연도'].unique())
@@ -100,19 +98,14 @@ with t2:
         with f_col[3]: s_usage = st.multiselect("용도", target_df['용도'].unique(), default=target_df['용도'].unique())
         with f_col[4]: s_type = st.multiselect("구분", target_df['구분'].unique(), default=target_df['구분'].unique())
 
-        # [필터링 적용]
         filtered_df = target_df[
-            (target_df['사업장'].isin(s_biz)) & 
-            (target_df['연도'].isin(s_year)) & 
-            (target_df['월'].isin(s_month)) &
-            (target_df['용도'].isin(s_usage)) &
-            (target_df['구분'].isin(s_type))
+            (target_df['사업장'].isin(s_biz)) & (target_df['연도'].isin(s_year)) & 
+            (target_df['월'].isin(s_month)) & (target_df['용도'].isin(s_usage)) & (target_df['구분'].isin(s_type))
         ].copy()
 
-        # 상단 합계
-        in_s = filtered_df[filtered_df['구분']=='수익']['금액'].sum()
-        ex_s = filtered_df[filtered_df['구분']=='비용']['금액'].sum()
-        st.markdown(f'<div style="background-color:#f0f2f6;padding:10px;border-radius:10px;margin-bottom:10px;"><span style="color:red;font-weight:bold;">🔴 수익: {int(in_s):,}원</span> | <span style="color:blue;font-weight:bold;">🔵 비용: {int(ex_s):,}원</span> | <b>💰 합계: {int(in_s-ex_s):,}원</b></div>', unsafe_allow_html=True)
+        # 합계 표시
+        in_s, ex_s = filtered_df[filtered_df['구분']=='수익']['금액'].sum(), filtered_df[filtered_df['구분']=='비용']['금액'].sum()
+        st.info(f"🔴 수익: {int(in_s):,}원 | 🔵 비용: {int(ex_s):,}원 | 💰 합계: {int(in_s-ex_s):,}원")
 
         # 표 편집기
         cat_list = ["입실료", "공과금", "식품", "비품", "임대료", "보증금", "인건비", "시설비", "기타"]
@@ -121,26 +114,40 @@ with t2:
                            "용도": st.column_config.SelectboxColumn("용도", options=cat_list),
                            "금액": st.column_config.NumberColumn("금액", format="%d")}, key="main_editor")
 
-        # 저장 및 다운로드
         st.divider()
+        st.write("📂 **PC에 저장 (다른 이름으로 저장)**")
         c1, c2, c3 = st.columns([2, 1, 1])
-        with c1: fn_input = st.text_input("파일 이름", value=f"율곡장부_{datetime.now().strftime('%Y-%m-%d')}")
-        with c2:
-            st.download_button("📥 필터 결과 CSV 다운로드", edited.to_csv(index=False, encoding='utf-8-sig'), file_name=f"{fn_input}.csv", mime="text/csv", use_container_width=True)
-        with c3:
-            if st.button("💾 장부에 최종 저장", use_container_width=True, type="primary"):
-                c_map = {"입실료":"수익","공과금":"비용","식품":"비용","비품":"비용","임대료":"비용","보증금":"-","인건비":"비용","시설비":"비용","기타":"비용"}
-                edited['구분'] = edited['용도'].map(c_map).fillna(edited['구분'])
-                # 최종 데이터 합치기
-                final_df = pd.concat([st.session_state.master_df, edited]).drop_duplicates(subset=['날짜','내용','금액']).reset_index(drop=True)
-                st.session_state.master_df = final_df
-                st.session_state.temp_df = pd.DataFrame() # 임시 비우기
-                final_df.to_csv(f"database_{fn_input}.csv", index=False, encoding='utf-8-sig')
-                st.success("저장 완료!")
-                st.rerun()
-    else: st.info("데이터가 없습니다.")
+        with c1: fn_input = st.text_input("파일 명 입력", value=f"율곡장부_{datetime.now().strftime('%Y-%m-%d')}")
+        
+        # [공통 로직] 편집된 전체 데이터 합치기
+        c_map = {"입실료":"수익","공과금":"비용","식품":"비용","비품":"비용","임대료":"비용","보증금":"-","인건비":"비용","시설비":"비용","기타":"비용"}
+        edited['구분'] = edited['용도'].map(c_map).fillna(edited['구분'])
+        final_total = pd.concat([st.session_state.master_df, edited]).drop_duplicates(subset=['날짜','내용','금액']).reset_index(drop=True)
 
-with t1: # 리포트
+        with c2:
+            # 1. 필터링된 현재 화면만 저장
+            csv_filtered = edited.to_csv(index=False, encoding='utf-8-sig')
+            st.download_button(
+                label="📥 현재 필터 결과 저장",
+                data=csv_filtered,
+                file_name=f"{fn_input}_필터링.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+        with c3:
+            # 2. 누적된 전체 데이터 저장
+            csv_total = final_total.to_csv(index=False, encoding='utf-8-sig')
+            st.download_button(
+                label="💾 누적 전체장부 저장",
+                data=csv_total,
+                file_name=f"{fn_input}_전체누적.csv",
+                mime="text/csv",
+                use_container_width=True,
+                type="primary"
+            )
+    else: st.info("업로드된 데이터가 없습니다.")
+
+with t1:
     m_df = st.session_state.master_df
     if not m_df.empty:
         years = sorted(m_df['연도'].unique().tolist(), reverse=True)
