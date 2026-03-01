@@ -11,7 +11,6 @@ st.set_page_config(page_title="율곡고시원 통합 관리 시스템", layout=
 
 # --- [파일 관리 로직] ---
 def get_latest_db_file():
-    # database_로 시작하는 파일 중 가장 최신 파일을 찾음
     files = [f for f in os.listdir('.') if f.startswith("database_") and f.endswith(".csv")]
     if not files: return None
     return max(files)
@@ -23,9 +22,12 @@ def load_data():
         except: pass
     return pd.DataFrame(columns=["연도", "월", "날짜", "사업장", "내용", "용도", "구분", "금액", "비고"])
 
-# 세션 데이터 초기화
+# 세션 초기화
 if 'master_df' not in st.session_state:
     st.session_state.master_df = load_data()
+
+if 'temp_df' not in st.session_state:
+    st.session_state.temp_df = pd.DataFrame()
 
 if 'cat_df' not in st.session_state:
     st.session_state.cat_df = pd.DataFrame({
@@ -65,14 +67,15 @@ def process_bank(file, biz_name, c_map):
         return rows
     except: return []
 
-# --- [메인 화면 사이드바] ---
+# --- [사이드바] ---
 st.title("🏠 율곡고시원 통합 관리 시스템")
 with st.sidebar:
-    st.header("📂 데이터 업로드 및 누적")
+    st.header("📂 데이터 업로드")
     bank_f1 = st.file_uploader("🏢 사업장 1 우리은행", type=['csv', 'xlsx', 'xls'])
     bank_f2 = st.file_uploader("🏢 사업장 2 우리은행", type=['csv', 'xlsx', 'xls'])
     coupang_f = st.file_uploader("🛒 쿠팡 공통 파일", type=['csv'])
-    if st.button("📦 장부에 누적 합치기", type="primary"):
+    
+    if st.button("📦 선택한 파일만 처리하기", type="primary"):
         c_map = dict(zip(st.session_state.cat_df['항목명'], st.session_state.cat_df['연결구분']))
         all_new = []
         if bank_f1: all_new += process_bank(bank_f1, "사업장1", c_map)
@@ -85,74 +88,80 @@ with st.sidebar:
                     amt = int(str(r.get('총결제금액(원)',0)).replace(',','').split('.')[0] or 0)
                     all_new.append({"연도":y, "월":m, "날짜":d, "사업장":"미분류(쿠팡)", "내용":str(r.get('상품명','')), "용도":"기타", "구분":"비용", "금액":amt, "비고":"쿠팡"})
             except: pass
+        
         if all_new:
-            new_df = pd.DataFrame(all_new)
-            new_df['사업장'] = new_df['사업장'].str.strip() # 공백 제거로 필터링 오류 방지
-            combined = pd.concat([st.session_state.master_df, new_df]).drop_duplicates(subset=['날짜','내용','금액']).reset_index(drop=True)
-            st.session_state.master_df = combined
-            st.success("합치기 완료! '장부 통합 편집' 탭에서 확인하세요.")
+            # 기존 데이터와 섞이지 않게 이번에 올린 것만 temp_df에 담음
+            st.session_state.temp_df = pd.DataFrame(all_new)
+            st.success("업로드된 파일 분석 완료!")
             st.rerun()
 
-# --- [메인 탭 구성] ---
-df = st.session_state.master_df
-main_tabs = st.tabs(["📊 연도별 리포트", "📝 장부 통합 편집", "⚙️ 설정"])
+# --- [메인 탭] ---
+main_tabs = st.tabs(["📊 리포트", "📝 장부 통합 편집", "⚙️ 설정"])
 
 with main_tabs[1]: # 편집 탭
-    st.subheader("📝 장부 통합 편집 및 저장")
-    biz_list = ["사업장1", "사업장2", "미분류(쿠팡)"]
-    selected_biz = st.multiselect("조회할 사업장을 선택하세요", options=biz_list, default=biz_list)
-    if not df.empty:
-        df['사업장'] = df['사업장'].str.strip() # 데이터 정제
-        display_df = df[df['사업장'].isin(selected_biz)].copy()
-        if display_df.empty:
-            st.warning("선택한 사업장에 해당하는 데이터가 없습니다. 필터를 확인해 주세요.")
-        else:
-            income_sum = display_df[display_df['구분']=='수익']['금액'].astype(float).sum()
-            expense_sum = display_df[display_df['구분']=='비용']['금액'].astype(float).sum()
-            st.markdown(f"""
-                <div style="position: sticky; top: 0; background-color: #ffffff; padding: 15px; border: 2px solid #f0f2f6; border-radius: 10px; z-index: 1000; margin-bottom: 20px;">
-                    <span style="color: #ff4b4b; font-weight: bold; font-size: 1.1rem; margin-right: 25px;">🔴 수익: {int(income_sum):,}원</span>
-                    <span style="color: #1c83e1; font-weight: bold; font-size: 1.1rem; margin-right: 25px;">🔵 비용: {int(expense_sum):,}원</span>
-                    <span style="color: #31333F; font-weight: bold; font-size: 1.1rem;">💰 잔액: {int(income_sum - expense_sum):,}원</span>
-                </div>
-            """, unsafe_allow_html=True)
-            def color_row(row):
-                color = '#ff4b4b' if row['구분'] == '수익' else ('#1c83e1' if row['구분'] == '비용' else '#31333F')
-                return [f'color: {color}; font-weight: bold' if name == '구분' else '' for name in row.index]
-            cat_list = st.session_state.cat_df["항목명"].tolist()
-            edited_df = st.data_editor(display_df.style.apply(color_row, axis=1), use_container_width=True, num_rows="dynamic",
-                column_config={"사업장": st.column_config.SelectboxColumn("사업장", options=["사업장1", "사업장2"], required=True),
-                               "용도": st.column_config.SelectboxColumn("용도", options=cat_list),
-                               "구분": st.column_config.TextColumn("구분(자동)", disabled=True),
-                               "금액": st.column_config.NumberColumn("금액", format="%d")}, key="final_editor")
-            st.divider()
-            st.write("📂 **최종 장부 파일 저장**")
-            c1, c2 = st.columns([3, 1])
-            with c1:
-                default_name = f"율곡장부_{datetime.now().strftime('%Y-%m-%d')}"
-                custom_name = st.text_input("저장할 파일 이름을 입력하세요", value=default_name)
-            with c2:
-                if st.button("💾 최종 저장하기", use_container_width=True, type="primary"):
-                    c_map = dict(zip(st.session_state.cat_df['항목명'], st.session_state.cat_df['연결구분']))
-                    non_selected = df[~df.index.isin(display_df.index)]
-                    final_df = pd.concat([non_selected, edited_df]).sort_index()
-                    final_df['구분'] = final_df['용도'].map(c_map).fillna(final_df['구분'])
-                    st.session_state.master_df = final_df
-                    fname = f"database_{custom_name}.csv" if not custom_name.startswith("database_") else f"{custom_name}.csv"
-                    final_df.to_csv(fname, index=False, encoding='utf-8-sig')
-                    st.success(f"✅ '{fname}' 파일로 저장되었습니다!")
-                    time.sleep(1); st.rerun()
-    else: st.info("데이터가 없습니다. 파일을 먼저 업로드해 주세요.")
+    st.subheader("📝 업로드 내역 편집 및 최종 저장")
+    
+    # 올린 파일이 있으면 temp_df를 보여주고, 없으면 기존 master_df를 보여줌
+    work_df = st.session_state.temp_df if not st.session_state.temp_df.empty else st.session_state.master_df
+    
+    if not work_df.empty:
+        # 필터링
+        biz_list = ["사업장1", "사업장2", "미분류(쿠팡)"]
+        selected_biz = st.multiselect("사업장 필터", options=biz_list, default=list(work_df['사업장'].unique()))
+        display_df = work_df[work_df['사업장'].isin(selected_biz)].copy()
+        
+        # 상단 합계
+        in_sum = display_df[display_df['구분']=='수익']['금액'].astype(float).sum()
+        ex_sum = display_df[display_df['구분']=='비용']['금액'].astype(float).sum()
+        st.markdown(f"""
+            <div style="position: sticky; top: 0; background-color: #ffffff; padding: 10px; border: 2px solid #f0f2f6; border-radius: 10px; z-index: 1000; margin-bottom: 15px;">
+                <span style="color: red; font-weight: bold;">🔴 수익: {int(in_sum):,}원</span> | 
+                <span style="color: blue; font-weight: bold;">🔵 비용: {int(ex_sum):,}원</span> | 
+                <span style="color: black; font-weight: bold;">💰 합계: {int(in_sum - ex_sum):,}원</span>
+            </div>
+        """, unsafe_allow_html=True)
+
+        def color_row(row):
+            c = 'red' if row['구분'] == '수익' else ('blue' if row['구분'] == '비용' else 'black')
+            return [f'color: {c}; font-weight: bold' if n == '구분' else '' for n in row.index]
+
+        cat_list = st.session_state.cat_df["항목명"].tolist()
+        edited_df = st.data_editor(display_df.style.apply(color_row, axis=1), use_container_width=True, num_rows="dynamic",
+            column_config={"사업장": st.column_config.SelectboxColumn("사업장", options=["사업장1", "사업장2"], required=True),
+                           "용도": st.column_config.SelectboxColumn("용도", options=cat_list),
+                           "구분": st.column_config.TextColumn("구분(자동)", disabled=True),
+                           "금액": st.column_config.NumberColumn("금액", format="%d")}, key="editor_v3")
+        
+        st.divider()
+        st.write("📂 **장부 영구 저장 (파일명 지정)**")
+        c1, c2 = st.columns([3, 1])
+        with c1:
+            default_fn = f"율곡장부_{datetime.now().strftime('%Y-%m-%d')}"
+            custom_fn = st.text_input("파일 이름을 입력하세요", value=default_fn)
+        with c2:
+            if st.button("💾 장부에 누적 저장", use_container_width=True, type="primary"):
+                c_map = dict(zip(st.session_state.cat_df['항목명'], st.session_state.cat_df['연결구분']))
+                # 이번에 편집한 내용을 원본에 누적
+                edited_df['구분'] = edited_df['용도'].map(c_map).fillna(edited_df['구분'])
+                final_combined = pd.concat([st.session_state.master_df, edited_df]).drop_duplicates(subset=['날짜','내용','금액']).reset_index(drop=True)
+                
+                st.session_state.master_df = final_combined
+                st.session_state.temp_df = pd.DataFrame() # 임시 저장소 비우기
+                
+                fname = f"database_{custom_fn}.csv" if not custom_fn.startswith("database_") else f"{custom_fn}.csv"
+                final_combined.to_csv(fname, index=False, encoding='utf-8-sig')
+                st.success(f"✅ '{fname}'으로 누적 저장되었습니다!")
+                time.sleep(1); st.rerun()
+    else:
+        st.info("사이드바에서 파일을 업로드해 주세요.")
 
 with main_tabs[0]: # 리포트 탭
-    if not df.empty:
-        all_years = sorted(df['연도'].unique().tolist(), reverse=True)
-        if all_years:
-            y_tabs = st.tabs([f"📅 {y}년" for y in all_years])
-            for i, y in enumerate(all_years):
-                with y_tabs[i]:
-                    y_df = df[df['연도'] == y]
-                    st.plotly_chart(px.bar(y_df, x='월', y='금액', color='구분', barmode='group', color_discrete_map={'수익': 'red', '비용': 'blue'}))
-                    st.dataframe(y_df, use_container_width=True)
-        else: st.info("연도 정보가 없습니다.")
-    else: st.info("데이터를 업로드해 주세요.")
+    m_df = st.session_state.master_df
+    if not m_df.empty:
+        years = sorted(m_df['연도'].unique().tolist(), reverse=True)
+        y_tabs = st.tabs([f"📅 {y}년" for y in years])
+        for i, y in enumerate(years):
+            with y_tabs[i]:
+                curr = m_df[m_df['연도'] == y]
+                st.plotly_chart(px.bar(curr, x='월', y='금액', color='구분', barmode='group', color_discrete_map={'수익': 'red', '비용': 'blue'}))
+                st.dataframe(curr, use_container_width=True)
