@@ -3,7 +3,6 @@ import pandas as pd
 import plotly.express as px
 import time
 import re
-import os
 
 # [1] 페이지 설정 및 세션 초기화
 st.set_page_config(page_title="율곡고시원 통합 관리 시스템", layout="wide")
@@ -33,23 +32,18 @@ st.title("🏠 율곡고시원 통합 관리 시스템")
 
 with st.sidebar:
     st.header("📂 데이터 통합")
-    # [.xls] 형식을 명시적으로 추가했습니다. 이제 선택이 잘 되실 거예요!
     bank_f = st.file_uploader("우리은행 (CSV/Excel)", type=['csv', 'xlsx', 'xls'])
     coupang_f = st.file_uploader("쿠팡 (CSV)", type=['csv'])
     
     if st.button("📦 새 데이터 합치기", type="primary"):
         if bank_f and coupang_f:
             try:
-                # 파일 읽기 로직 보강
                 if bank_f.name.lower().endswith('.csv'):
                     try: b_df = pd.read_csv(bank_f, encoding='cp949')
                     except: b_df = pd.read_csv(bank_f, encoding='utf-8-sig')
-                elif bank_f.name.lower().endswith('.xls'):
-                    # 구형 엑셀 형식 처리
-                    try: b_df = pd.read_excel(bank_f, engine='xlrd')
-                    except: b_df = pd.read_html(bank_f)[0]
                 else:
-                    b_df = pd.read_excel(bank_f)
+                    try: b_df = pd.read_excel(bank_f)
+                    except: b_df = pd.read_html(bank_f)[0]
                 
                 h_idx = 0
                 for i in range(min(20, len(b_df))):
@@ -83,14 +77,61 @@ with st.sidebar:
             except Exception as e:
                 st.error(f"오류: {e}")
 
-# --- [연도별 탭 구성] ---
+# --- [메인 레이아웃] ---
 df = st.session_state.master_df
-all_years = sorted(df['연도'].unique().tolist(), reverse=True) if not df.empty else []
-
 main_tabs = st.tabs(["📊 연도별 리포트", "📝 전체편집", "⚙️ 설정"])
 
-with main_tabs[0]: 
+with main_tabs[1]: # 전체편집 탭
+    st.subheader("📝 장부 통합 편집")
+    
     if not df.empty:
+        # [상단 고정 합계 표시창]
+        income_sum = df[df['구분']=='수익']['금액'].astype(float).sum()
+        expense_sum = df[df['구분']=='비용']['금액'].astype(float).sum()
+        total_balance = income_sum - expense_sum
+        
+        # 합계 항목을 상단에 고정 표시
+        st.markdown(f"""
+            <div style="position: sticky; top: 0; background-color: white; padding: 10px; border: 1px solid #ddd; border-radius: 5px; z-index: 1000; margin-bottom: 20px;">
+                <span style="color: red; font-weight: bold; font-size: 1.2rem; margin-right: 20px;">🔴 수익 합계: {int(income_sum):,}원</span>
+                <span style="color: blue; font-weight: bold; font-size: 1.2rem; margin-right: 20px;">🔵 비용 합계: {int(expense_sum):,}원</span>
+                <span style="color: black; font-weight: bold; font-size: 1.2rem;">💰 총 합계: {int(total_balance):,}원</span>
+            </div>
+        """, unsafe_allow_html=True)
+
+        # [수익/비용 색상 구분 적용]
+        def color_df(val):
+            if val == '수익': color = 'red'
+            elif val == '비용': color = 'blue'
+            else: color = 'black'
+            return f'color: {color}; font-weight: bold;'
+
+        # 편집창 구성
+        cat_list = st.session_state.cat_df["항목명"].tolist()
+        edited_df = st.data_editor(
+            df.style.applymap(color_df, subset=['구분']), # 구분에 색상 적용
+            use_container_width=True, 
+            num_rows="dynamic", 
+            key="main_editor",
+            column_config={
+                "용도": st.column_config.SelectboxColumn("용도", options=cat_list, required=True),
+                "구분": st.column_config.TextColumn("구분(자동)", disabled=True),
+                "금액": st.column_config.NumberColumn("금액", format="%d")
+            }
+        )
+        
+        if st.button("💾 변경사항 저장", use_container_width=True, type="primary"):
+            c_map = dict(zip(st.session_state.cat_df['항목명'], st.session_state.cat_df['연결구분']))
+            edited_df['구분'] = edited_df['용도'].map(c_map).fillna(edited_df['구분'])
+            st.session_state.master_df = edited_df
+            st.success("저장 완료!")
+            st.rerun()
+    else:
+        st.info("데이터를 업로드해 주세요.")
+
+with main_tabs[0]: # 리포트 탭
+    if not df.empty:
+        all_years = sorted(df['연도'].unique().tolist(), reverse=True)
         year_tabs = st.tabs([f"📅 {y}년" for y in all_years])
         for i, y in enumerate(all_years):
             with year_tabs[i]:
@@ -101,22 +142,9 @@ with main_tabs[0]:
                 
                 st.subheader(f"✨ {y}년 총결산")
                 c1, c2, c3 = st.columns(3)
-                c1.metric("총 수익", f"{income:,}원")
-                c2.metric("총 비용", f"{expense:,}원")
-                c3.metric("순이익", f"{income - expense:,}원")
+                c1.metric("총 수익", f"{int(income):,}원")
+                c2.metric("총 비용", f"{int(expense):,}원")
+                c3.metric("순이익", f"{int(income - expense):,}원")
                 
                 chart_df = y_df.groupby(['월', '구분'])['금액'].sum().reset_index()
-                st.plotly_chart(px.bar(chart_df, x='월', y='금액', color='구분', barmode='group'), use_container_width=True)
-                st.dataframe(y_df, use_container_width=True)
-    else:
-        st.info("데이터를 업로드해 주세요.")
-
-with main_tabs[1]:
-    st.subheader("📝 장부 통합 편집")
-    edited_df = st.data_editor(df, use_container_width=True, num_rows="dynamic", key="main_editor")
-    if st.button("💾 변경사항 저장", use_container_width=True, type="primary"):
-        c_map = dict(zip(st.session_state.cat_df['항목명'], st.session_state.cat_df['연결구분']))
-        edited_df['구분'] = edited_df['용도'].map(c_map).fillna(edited_df['구분'])
-        st.session_state.master_df = edited_df
-        st.success("저장 완료!")
-        st.rerun()
+                st.plotly_chart(px.bar(chart_df, x='월', y='금액', color='구분', barmode='group', color_discrete_map={'수익': 'red', '비용': 'blue'}), use_container_width=True)
