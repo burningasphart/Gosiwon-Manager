@@ -79,7 +79,6 @@ def process_bank(file, biz_name):
             vo = int(str(r.get('찾으신금액',0)).replace(',','').strip() or 0)
             cont = str(r.get('기재내용','')).strip()
             init_usage = "입실료" if vi > 0 else "기타"
-            # 자동 규칙 적용
             final_usage = apply_rules(cont, init_usage)
             rows.append({
                 "연도":y, "월":m, "날짜":d, "사업장":biz_name, "내용":cont, 
@@ -123,7 +122,6 @@ with t3: # 설정 탭
     st.subheader("⚙️ 자동 분류 규칙 설정")
     st.write("내용(기재내용)에 특정 단어가 포함되면 해당 용도로 자동 분류합니다.")
     
-    # 규칙 추가 UI
     with st.expander("➕ 새로운 규칙 추가", expanded=True):
         c1, c2, c3 = st.columns([2, 2, 1])
         with c1: new_kw = st.text_input("찾을 키워드 (예: 전기요금, 삼다수)")
@@ -137,7 +135,6 @@ with t3: # 설정 탭
                     st.success(f"'{new_kw}' 규칙이 서버에 저장되었습니다!")
                     st.rerun()
 
-    # 규칙 목록 편집 및 삭제
     st.write("### 📋 현재 저장된 규칙 목록")
     if not st.session_state.rules_df.empty:
         edited_rules = st.data_editor(st.session_state.rules_df, num_rows="dynamic", use_container_width=True, key="rule_editor")
@@ -153,7 +150,6 @@ with t2: # 편집 탭
     target_df = st.session_state.temp_df if not st.session_state.temp_df.empty else st.session_state.master_df
     
     if not target_df.empty:
-        # 필터 UI 및 로직 (기존과 동일)
         f_col = st.columns(5)
         with f_col[0]: s_biz = st.multiselect("사업장", target_df['사업장'].unique(), default=target_df['사업장'].unique())
         with f_col[1]: s_year = st.multiselect("연도", target_df['연도'].unique(), default=target_df['연도'].unique())
@@ -163,13 +159,19 @@ with t2: # 편집 탭
 
         filtered_df = target_df[(target_df['사업장'].isin(s_biz)) & (target_df['연도'].isin(s_year)) & (target_df['월'].isin(s_month)) & (target_df['용도'].isin(s_usage)) & (target_df['구분'].isin(s_type))].copy()
         
-        in_s, ex_s = filtered_df[filtered_df['구분']=='수익']['금액'].sum(), filtered_df[filtered_df['구분']=='비용']['금액'].sum()
+        # 합계 계산 시 '수익'과 '비용'만 합산 ('-' 항목은 계산에서 자동 제외)
+        in_s = filtered_df[filtered_df['구분']=='수익']['금액'].astype(float).sum()
+        ex_s = filtered_df[filtered_df['구분']=='비용']['금액'].astype(float).sum()
         st.info(f"🔴 수익: {int(in_s):,}원 | 🔵 비용: {int(ex_s):,}원 | 💰 합계: {int(in_s-ex_s):,}원")
 
+        # 장부 편집기: '구분'을 Selectbox로 변경하고 '-' 옵션 추가
         edited = st.data_editor(filtered_df, use_container_width=True, num_rows="dynamic",
-            column_config={"사업장": st.column_config.SelectboxColumn("사업장", options=["사업장1", "사업장2"]),
-                           "용도": st.column_config.SelectboxColumn("용도", options=CAT_LIST),
-                           "금액": st.column_config.NumberColumn("금액", format="%d")}, key="main_editor")
+            column_config={
+                "사업장": st.column_config.SelectboxColumn("사업장", options=["사업장1", "사업장2"]),
+                "용도": st.column_config.SelectboxColumn("용도", options=CAT_LIST),
+                "구분": st.column_config.SelectboxColumn("구분", options=["수익", "비용", "-"]),
+                "금액": st.column_config.NumberColumn("금액", format="%d")
+            }, key="main_editor")
 
         st.divider()
         c1, c2, c3 = st.columns([2, 1, 1])
@@ -185,7 +187,7 @@ with t2: # 편집 탭
             st.download_button("💾 누적 전체장부 저장", final_total.to_csv(index=False, encoding='utf-8-sig'), file_name=f"{fn_input}_전체누적.csv", mime="text/csv", use_container_width=True, type="primary")
     else: st.info("데이터가 없습니다.")
 
-with t1: # 리포트 탭 (기존과 동일)
+with t1: # 리포트 탭
     m_df = st.session_state.master_df
     if not m_df.empty:
         years = sorted(m_df['연도'].unique().tolist(), reverse=True)
@@ -193,4 +195,4 @@ with t1: # 리포트 탭 (기존과 동일)
         for i, y in enumerate(years):
             with y_tabs[i]:
                 curr = m_df[m_df['연도'] == y]
-                st.plotly_chart(px.bar(curr, x='월', y='금액', color='구분', barmode='group', color_discrete_map={'수익':'red','비용':'blue'}))
+                st.plotly_chart(px.bar(curr, x='월', y='금액', color='구분', barmode='group', color_discrete_map={'수익':'red','비용':'blue', '-':'gray'}))
