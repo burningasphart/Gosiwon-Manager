@@ -79,13 +79,8 @@ def process_bank(file, biz_name):
             vo = int(str(r.get('찾으신금액',0)).replace(',','').strip() or 0)
             cont = str(r.get('기재내용','')).strip()
             init_usage = "입실료" if vi > 0 else "기타"
-            # 자동 규칙 적용
             final_usage = apply_rules(cont, init_usage)
-            rows.append({
-                "연도":y, "월":m, "날짜":d, "사업장":biz_name, "내용":cont, 
-                "용도":final_usage, "구분":TYPE_MAP.get(final_usage, "비용"), 
-                "금액":vi if vi>0 else vo, "비고":""
-            })
+            rows.append({"연도":y, "월":m, "날짜":d, "사업장":biz_name, "내용":cont, "용도":final_usage, "구분":TYPE_MAP.get(final_usage, "비용"), "금액":vi if vi>0 else vo, "비고":""})
         return rows
     except: return []
 
@@ -114,46 +109,17 @@ with st.sidebar:
             except: pass
         if new_data:
             st.session_state.temp_df = pd.DataFrame(new_data)
-            st.success("분석 완료! 규칙이 적용되었습니다.")
+            st.success("분석 완료!")
             st.rerun()
 
 t1, t2, t3 = st.tabs(["📊 리포트", "📝 장부 통합 편집", "⚙️ 설정"])
-
-with t3: # 설정 탭
-    st.subheader("⚙️ 자동 분류 규칙 설정")
-    st.write("내용(기재내용)에 특정 단어가 포함되면 해당 용도로 자동 분류합니다.")
-    
-    # 규칙 추가 UI
-    with st.expander("➕ 새로운 규칙 추가", expanded=True):
-        c1, c2, c3 = st.columns([2, 2, 1])
-        with c1: new_kw = st.text_input("찾을 키워드 (예: 전기요금, 삼다수)")
-        with c2: new_cat = st.selectbox("지정할 용도", options=CAT_LIST)
-        with c3:
-            if st.button("규칙 추가", use_container_width=True):
-                if new_kw:
-                    new_row = pd.DataFrame([{"키워드": new_kw, "지정용도": new_cat}])
-                    st.session_state.rules_df = pd.concat([st.session_state.rules_df, new_row]).drop_duplicates().reset_index(drop=True)
-                    save_rules(st.session_state.rules_df)
-                    st.success(f"'{new_kw}' 규칙이 서버에 저장되었습니다!")
-                    st.rerun()
-
-    # 규칙 목록 편집 및 삭제
-    st.write("### 📋 현재 저장된 규칙 목록")
-    if not st.session_state.rules_df.empty:
-        edited_rules = st.data_editor(st.session_state.rules_df, num_rows="dynamic", use_container_width=True, key="rule_editor")
-        if st.button("🔄 수정사항 서버에 저장"):
-            st.session_state.rules_df = edited_rules
-            save_rules(edited_rules)
-            st.toast("규칙이 서버에 업데이트되었습니다!")
-    else:
-        st.info("등록된 규칙이 없습니다. 위에서 규칙을 추가해 보세요.")
 
 with t2: # 편집 탭
     st.subheader("📝 상세 필터링 및 편집")
     target_df = st.session_state.temp_df if not st.session_state.temp_df.empty else st.session_state.master_df
     
     if not target_df.empty:
-        # 필터 UI 및 로직 (기존과 동일)
+        # 필터 구역
         f_col = st.columns(5)
         with f_col[0]: s_biz = st.multiselect("사업장", target_df['사업장'].unique(), default=target_df['사업장'].unique())
         with f_col[1]: s_year = st.multiselect("연도", target_df['연도'].unique(), default=target_df['연도'].unique())
@@ -163,10 +129,16 @@ with t2: # 편집 탭
 
         filtered_df = target_df[(target_df['사업장'].isin(s_biz)) & (target_df['연도'].isin(s_year)) & (target_df['월'].isin(s_month)) & (target_df['용도'].isin(s_usage)) & (target_df['구분'].isin(s_type))].copy()
         
+        # 합계창
         in_s, ex_s = filtered_df[filtered_df['구분']=='수익']['금액'].sum(), filtered_df[filtered_df['구분']=='비용']['금액'].sum()
-        st.info(f"🔴 수익: {int(in_s):,}원 | 🔵 비용: {int(ex_s):,}원 | 💰 합계: {int(in_s-ex_s):,}원")
+        st.markdown(f'<div style="background-color:#f0f2f6;padding:10px;border-radius:10px;margin-bottom:10px;"><span style="color:red;font-weight:bold;">🔴 수익: {int(in_s):,}원</span> | <span style="color:blue;font-weight:bold;">🔵 비용: {int(ex_s):,}원</span> | <b>💰 합계: {int(in_s-ex_s):,}원</b></div>', unsafe_allow_html=True)
 
-        edited = st.data_editor(filtered_df, use_container_width=True, num_rows="dynamic",
+        # --- [색상 복구 로직] ---
+        def color_rule(row):
+            color = 'red' if row['구분'] == '수익' else ('blue' if row['구분'] == '비용' else 'black')
+            return [f'color: {color}; font-weight: bold' if name == '구분' else '' for name in row.index]
+
+        edited = st.data_editor(filtered_df.style.apply(color_rule, axis=1), use_container_width=True, num_rows="dynamic",
             column_config={"사업장": st.column_config.SelectboxColumn("사업장", options=["사업장1", "사업장2"]),
                            "용도": st.column_config.SelectboxColumn("용도", options=CAT_LIST),
                            "금액": st.column_config.NumberColumn("금액", format="%d")}, key="main_editor")
@@ -175,17 +147,33 @@ with t2: # 편집 탭
         c1, c2, c3 = st.columns([2, 1, 1])
         with c1: fn_input = st.text_input("파일 명 입력", value=f"율곡장부_{datetime.now().strftime('%Y-%m-%d')}")
         
-        # 저장 시 구분 자동 갱신
         edited['구분'] = edited['용도'].map(TYPE_MAP).fillna(edited['구분'])
         final_total = pd.concat([st.session_state.master_df, edited]).drop_duplicates(subset=['날짜','내용','금액']).reset_index(drop=True)
 
         with c2:
-            st.download_button("📥 현재 필터 결과 저장", edited.to_csv(index=False, encoding='utf-8-sig'), file_name=f"{fn_input}_필터링.csv", mime="text/csv", use_container_width=True)
+            st.download_button("📥 필터링 결과 저장", edited.to_csv(index=False, encoding='utf-8-sig'), file_name=f"{fn_input}_필터.csv", mime="text/csv", use_container_width=True)
         with c3:
-            st.download_button("💾 누적 전체장부 저장", final_total.to_csv(index=False, encoding='utf-8-sig'), file_name=f"{fn_input}_전체누적.csv", mime="text/csv", use_container_width=True, type="primary")
+            st.download_button("💾 전체 누적본 저장", final_total.to_csv(index=False, encoding='utf-8-sig'), file_name=f"{fn_input}_전체.csv", mime="text/csv", use_container_width=True, type="primary")
     else: st.info("데이터가 없습니다.")
 
-with t1: # 리포트 탭 (기존과 동일)
+with t3: # 설정 탭
+    st.subheader("⚙️ 자동 분류 규칙 관리")
+    with st.expander("➕ 새 규칙 추가", expanded=True):
+        c1, c2, c3 = st.columns([2, 2, 1])
+        with c1: kw = st.text_input("키워드")
+        with c2: ct = st.selectbox("용도", options=CAT_LIST)
+        with c3:
+            if st.button("추가"):
+                if kw:
+                    st.session_state.rules_df = pd.concat([st.session_state.rules_df, pd.DataFrame([{"키워드":kw, "지정용도":ct}])]).drop_duplicates().reset_index(drop=True)
+                    save_rules(st.session_state.rules_df)
+                    st.rerun()
+    st.data_editor(st.session_state.rules_df, num_rows="dynamic", use_container_width=True, key="rule_editor")
+    if st.button("💾 규칙 서버 저장"):
+        save_rules(st.session_state.rules_df)
+        st.success("규칙이 서버에 저장되었습니다.")
+
+with t1: # 리포트
     m_df = st.session_state.master_df
     if not m_df.empty:
         years = sorted(m_df['연도'].unique().tolist(), reverse=True)
