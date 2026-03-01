@@ -87,7 +87,7 @@ with st.sidebar:
             except: pass
         if all_new:
             new_df = pd.DataFrame(all_new)
-            new_df['사업장'] = new_df['사업장'].str.strip() # 공과금 공백 제거로 필터링 오류 방지
+            new_df['사업장'] = new_df['사업장'].str.strip() # 공백 제거로 필터링 오류 방지
             combined = pd.concat([st.session_state.master_df, new_df]).drop_duplicates(subset=['날짜','내용','금액']).reset_index(drop=True)
             st.session_state.master_df = combined
             st.success("합치기 완료! '장부 통합 편집' 탭에서 확인하세요.")
@@ -107,8 +107,8 @@ with main_tabs[1]: # 편집 탭
         if display_df.empty:
             st.warning("선택한 사업장에 해당하는 데이터가 없습니다. 필터를 확인해 주세요.")
         else:
-            in_sum = display_df[display_df['구분']=='수익']['금액'].astype(float).sum()
-            ex_sum = display_df[display_df['구분']=='비용']['금액'].astype(float).sum()
+            income_sum = display_df[display_df['구분']=='수익']['금액'].astype(float).sum()
+            expense_sum = display_df[display_df['구분']=='비용']['금액'].astype(float).sum()
             st.markdown(f"""
                 <div style="position: sticky; top: 0; background-color: #ffffff; padding: 15px; border: 2px solid #f0f2f6; border-radius: 10px; z-index: 1000; margin-bottom: 20px;">
                     <span style="color: #ff4b4b; font-weight: bold; font-size: 1.1rem; margin-right: 25px;">🔴 수익: {int(income_sum):,}원</span>
