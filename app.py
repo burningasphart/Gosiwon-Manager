@@ -33,16 +33,23 @@ st.title("🏠 율곡고시원 통합 관리 시스템")
 
 with st.sidebar:
     st.header("📂 데이터 통합")
-    bank_f = st.file_uploader("우리은행 (CSV/Excel)", type=['csv', 'xlsx'])
+    # [.xls] 형식을 명시적으로 추가했습니다. 이제 선택이 잘 되실 거예요!
+    bank_f = st.file_uploader("우리은행 (CSV/Excel)", type=['csv', 'xlsx', 'xls'])
     coupang_f = st.file_uploader("쿠팡 (CSV)", type=['csv'])
     
     if st.button("📦 새 데이터 합치기", type="primary"):
         if bank_f and coupang_f:
             try:
-                if bank_f.name.endswith('.csv'):
+                # 파일 읽기 로직 보강
+                if bank_f.name.lower().endswith('.csv'):
                     try: b_df = pd.read_csv(bank_f, encoding='cp949')
                     except: b_df = pd.read_csv(bank_f, encoding='utf-8-sig')
-                else: b_df = pd.read_excel(bank_f)
+                elif bank_f.name.lower().endswith('.xls'):
+                    # 구형 엑셀 형식 처리
+                    try: b_df = pd.read_excel(bank_f, engine='xlrd')
+                    except: b_df = pd.read_html(bank_f)[0]
+                else:
+                    b_df = pd.read_excel(bank_f)
                 
                 h_idx = 0
                 for i in range(min(20, len(b_df))):
@@ -82,14 +89,13 @@ all_years = sorted(df['연도'].unique().tolist(), reverse=True) if not df.empty
 
 main_tabs = st.tabs(["📊 연도별 리포트", "📝 전체편집", "⚙️ 설정"])
 
-with main_tabs[0]: # 리포트 탭
+with main_tabs[0]: 
     if not df.empty:
         year_tabs = st.tabs([f"📅 {y}년" for y in all_years])
         for i, y in enumerate(all_years):
             with year_tabs[i]:
                 y_df = df[df['연도'] == y].copy()
                 y_df['금액'] = pd.to_numeric(y_df['금액'], errors='coerce').fillna(0)
-                
                 income = y_df[y_df['구분']=='수익']['금액'].sum()
                 expense = y_df[y_df['구분']=='비용']['금액'].sum()
                 
@@ -100,14 +106,12 @@ with main_tabs[0]: # 리포트 탭
                 c3.metric("순이익", f"{income - expense:,}원")
                 
                 chart_df = y_df.groupby(['월', '구분'])['금액'].sum().reset_index()
-                st.plotly_chart(px.bar(chart_df, x='월', y='금액', color='구분', barmode='group', title=f"{y}년 월별 수익/비용 내역"), use_container_width=True)
-                
-                st.write(f"📂 {y}년 상세 데이터")
+                st.plotly_chart(px.bar(chart_df, x='월', y='금액', color='구분', barmode='group'), use_container_width=True)
                 st.dataframe(y_df, use_container_width=True)
     else:
-        st.info("사이드바에서 파일을 업로드해 주세요.")
+        st.info("데이터를 업로드해 주세요.")
 
-with main_tabs[1]: # 편집 탭
+with main_tabs[1]:
     st.subheader("📝 장부 통합 편집")
     edited_df = st.data_editor(df, use_container_width=True, num_rows="dynamic", key="main_editor")
     if st.button("💾 변경사항 저장", use_container_width=True, type="primary"):
