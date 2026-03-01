@@ -5,10 +5,9 @@ import time
 import re
 import os
 
-# 페이지 설정
+# [1] 페이지 설정 및 세션 초기화
 st.set_page_config(page_title="율곡고시원 통합 관리 시스템", layout="wide")
 
-# --- [1] 세션 데이터 초기화 ---
 if 'cat_df' not in st.session_state:
     st.session_state.cat_df = pd.DataFrame({
         "항목명": ["입실료", "공과금", "식품", "비품", "임대료", "보증금", "인건비", "시설비", "기타"],
@@ -18,13 +17,7 @@ if 'cat_df' not in st.session_state:
 if 'master_df' not in st.session_state:
     st.session_state.master_df = pd.DataFrame(columns=["연도", "월", "날짜", "내용", "용도", "구분", "금액", "비고"])
 
-# --- [2] 보조 함수 ---
-def clean_amt(x):
-    try:
-        s = "".join(filter(str.isdigit, str(x).split('.')[0]))
-        return int(s) if s else 0
-    except: return 0
-
+# --- [날짜 표준화 함수] ---
 def standardize_date(date_val):
     try:
         d_str = str(date_val).strip()
@@ -35,24 +28,22 @@ def standardize_date(date_val):
     except:
         return time.strftime("%Y"), time.strftime("%m"), time.strftime("%m/%d")
 
-# --- [3] 사이드바 및 파일 통합 ---
+# --- [메인 화면] ---
+st.title("🏠 율곡고시원 통합 관리 시스템")
+
 with st.sidebar:
     st.header("📂 데이터 통합")
-    bank_f = st.file_uploader("우리은행 (CSV/Excel)", type=['csv', 'xlsx', 'xls'], key="bank_v1")
-    coupang_f = st.file_uploader("쿠팡 (CSV)", type=['csv'], key="coupang_v1")
+    bank_f = st.file_uploader("우리은행 (CSV/Excel)", type=['csv', 'xlsx'])
+    coupang_f = st.file_uploader("쿠팡 (CSV)", type=['csv'])
     
     if st.button("📦 새 데이터 합치기", type="primary"):
         if bank_f and coupang_f:
             try:
-                # 은행 파일 읽기 (인코딩 대응)
                 if bank_f.name.endswith('.csv'):
                     try: b_df = pd.read_csv(bank_f, encoding='cp949')
                     except: b_df = pd.read_csv(bank_f, encoding='utf-8-sig')
-                else:
-                    try: b_df = pd.read_excel(bank_f)
-                    except: b_df = pd.read_html(bank_f)[0] # 특수 엑셀 대응
+                else: b_df = pd.read_excel(bank_f)
                 
-                # 헤더 찾기
                 h_idx = 0
                 for i in range(min(20, len(b_df))):
                     if '거래일시' in "".join(b_df.iloc[i].astype(str)): h_idx = i; break
@@ -65,7 +56,8 @@ with st.sidebar:
                     d_val = r.get('거래일시')
                     if pd.isna(d_val): continue
                     y, m, d_std = standardize_date(d_val)
-                    vi, vo = clean_amt(r.get('맡기신금액',0)), clean_amt(r.get('찾으신금액',0))
+                    vi = int(str(r.get('맡기신금액',0)).replace(',','').split('.')[0] or 0)
+                    vo = int(str(r.get('찾으신금액',0)).replace(',','').split('.')[0] or 0)
                     content = str(r.get('기재내용','')).strip()
                     yd = "입실료" if vi > 0 else "기타"
                     new_rows.append({"연도":y, "월":m, "날짜":d_std, "내용":content, "용도":yd, "구분":c_map.get(yd, "비용"), "금액":vi if vi>0 else vo, "비고":""})
@@ -73,21 +65,49 @@ with st.sidebar:
                 c_df = pd.read_csv(coupang_f, encoding='utf-8-sig')
                 for _, r in c_df.iterrows():
                     y, m, d_std = standardize_date(r.get('주문일',''))
-                    amt = clean_amt(r.get('총결제금액(원)',0))
-                    new_rows.append({"연도":y, "월":m, "날짜":d_std, "내용":str(r.get('상품명','')), "용도":"기타", "구분":"비용", "금액":amt, "비고":"쿠팡"})
+                    amt = int(str(r.get('총결제금액(원)',0)).replace(',','').split('.')[0] or 0)
+                    p_name = str(r.get('상품명',''))
+                    new_rows.append({"연도":y, "월":m, "날짜":d_std, "내용":p_name, "용도":"기타", "구분":"비용", "금액":amt, "비고":"쿠팡"})
 
                 if new_rows:
                     st.session_state.master_df = pd.concat([st.session_state.master_df, pd.DataFrame(new_rows)]).drop_duplicates(subset=['날짜','내용','금액']).reset_index(drop=True)
                     st.success("데이터 통합 완료!")
                     st.rerun()
-            except Exception as e: st.error(f"오류: {e}")
+            except Exception as e:
+                st.error(f"오류: {e}")
 
-# --- [4] 메인 화면 ---
+# --- [연도별 탭 구성] ---
 df = st.session_state.master_df
-all_months = sorted(df['월'].unique().tolist()) if not df.empty else []
-tabs = st.tabs(["📊 리포트", "📝 전체편집"] + [f"📅 {m}월" for m in all_months] + ["⚙️ 설정"])
+all_years = sorted(df['연도'].unique().tolist(), reverse=True) if not df.empty else []
 
-with tabs[1]:
+main_tabs = st.tabs(["📊 연도별 리포트", "📝 전체편집", "⚙️ 설정"])
+
+with main_tabs[0]: # 리포트 탭
+    if not df.empty:
+        year_tabs = st.tabs([f"📅 {y}년" for y in all_years])
+        for i, y in enumerate(all_years):
+            with year_tabs[i]:
+                y_df = df[df['연도'] == y].copy()
+                y_df['금액'] = pd.to_numeric(y_df['금액'], errors='coerce').fillna(0)
+                
+                income = y_df[y_df['구분']=='수익']['금액'].sum()
+                expense = y_df[y_df['구분']=='비용']['금액'].sum()
+                
+                st.subheader(f"✨ {y}년 총결산")
+                c1, c2, c3 = st.columns(3)
+                c1.metric("총 수익", f"{income:,}원")
+                c2.metric("총 비용", f"{expense:,}원")
+                c3.metric("순이익", f"{income - expense:,}원")
+                
+                chart_df = y_df.groupby(['월', '구분'])['금액'].sum().reset_index()
+                st.plotly_chart(px.bar(chart_df, x='월', y='금액', color='구분', barmode='group', title=f"{y}년 월별 수익/비용 내역"), use_container_width=True)
+                
+                st.write(f"📂 {y}년 상세 데이터")
+                st.dataframe(y_df, use_container_width=True)
+    else:
+        st.info("사이드바에서 파일을 업로드해 주세요.")
+
+with main_tabs[1]: # 편집 탭
     st.subheader("📝 장부 통합 편집")
     edited_df = st.data_editor(df, use_container_width=True, num_rows="dynamic", key="main_editor")
     if st.button("💾 변경사항 저장", use_container_width=True, type="primary"):
@@ -96,11 +116,3 @@ with tabs[1]:
         st.session_state.master_df = edited_df
         st.success("저장 완료!")
         st.rerun()
-
-for i, m in enumerate(all_months):
-    with tabs[i+2]: st.dataframe(df[df['월'] == m], use_container_width=True)
-
-with tabs[0]:
-    if not df.empty:
-        st.metric("누적 수익", f"{df[df['구분']=='수익']['금액'].sum():,}")
-        st.plotly_chart(px.bar(df, x='월', y='금액', color='구분', barmode='group'), use_container_width=True)
