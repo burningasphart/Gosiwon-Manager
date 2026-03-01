@@ -142,14 +142,13 @@ with t3: # 설정 탭
             st.session_state.rules_df = edited_rules
             save_rules(edited_rules)
             st.toast("규칙이 서버에 업데이트되었습니다!")
-    else:
-        st.info("등록된 규칙이 없습니다. 위에서 규칙을 추가해 보세요.")
 
 with t2: # 편집 탭
     st.subheader("📝 상세 필터링 및 편집")
     target_df = st.session_state.temp_df if not st.session_state.temp_df.empty else st.session_state.master_df
     
     if not target_df.empty:
+        # 필터 UI
         f_col = st.columns(5)
         with f_col[0]: s_biz = st.multiselect("사업장", target_df['사업장'].unique(), default=target_df['사업장'].unique())
         with f_col[1]: s_year = st.multiselect("연도", target_df['연도'].unique(), default=target_df['연도'].unique())
@@ -158,13 +157,8 @@ with t2: # 편집 탭
         with f_col[4]: s_type = st.multiselect("구분", target_df['구분'].unique(), default=target_df['구분'].unique())
 
         filtered_df = target_df[(target_df['사업장'].isin(s_biz)) & (target_df['연도'].isin(s_year)) & (target_df['월'].isin(s_month)) & (target_df['용도'].isin(s_usage)) & (target_df['구분'].isin(s_type))].copy()
-        
-        # 합계 계산 시 '수익'과 '비용'만 합산 ('-' 항목은 계산에서 자동 제외)
-        in_s = filtered_df[filtered_df['구분']=='수익']['금액'].astype(float).sum()
-        ex_s = filtered_df[filtered_df['구분']=='비용']['금액'].astype(float).sum()
-        st.info(f"🔴 수익: {int(in_s):,}원 | 🔵 비용: {int(ex_s):,}원 | 💰 합계: {int(in_s-ex_s):,}원")
 
-        # 장부 편집기: '구분'을 Selectbox로 변경하고 '-' 옵션 추가
+        # 장부 편집기 ('-' 포함 Selectbox 적용)
         edited = st.data_editor(filtered_df, use_container_width=True, num_rows="dynamic",
             column_config={
                 "사업장": st.column_config.SelectboxColumn("사업장", options=["사업장1", "사업장2"]),
@@ -173,12 +167,17 @@ with t2: # 편집 탭
                 "금액": st.column_config.NumberColumn("금액", format="%d")
             }, key="main_editor")
 
+        # [핵심 수정] 편집된 데이터(edited)를 기준으로 실시간 합계 계산
+        in_s = edited[edited['구분']=='수익']['금액'].astype(float).sum()
+        ex_s = edited[edited['구분']=='비용']['금액'].astype(float).sum()
+        
+        # 합계창을 편집기 아래 혹은 위에 배치하여 실시간 확인 가능하게 함
+        st.info(f"🔴 수익: {int(in_s):,}원 | 🔵 비용: {int(ex_s):,}원 | 💰 합계: {int(in_s-ex_s):,}원")
+
         st.divider()
         c1, c2, c3 = st.columns([2, 1, 1])
         with c1: fn_input = st.text_input("파일 명 입력", value=f"율곡장부_{datetime.now().strftime('%Y-%m-%d')}")
         
-        # 저장 시 구분 자동 갱신
-        edited['구분'] = edited['용도'].map(TYPE_MAP).fillna(edited['구분'])
         final_total = pd.concat([st.session_state.master_df, edited]).drop_duplicates(subset=['날짜','내용','금액']).reset_index(drop=True)
 
         with c2:
@@ -194,5 +193,5 @@ with t1: # 리포트 탭
         y_tabs = st.tabs([f"📅 {y}년" for y in years])
         for i, y in enumerate(years):
             with y_tabs[i]:
-                curr = m_df[m_df['연도'] == y]
+                curr = m_df[m_df['연_도'] == y] if '연_도' in m_df.columns else m_df[m_df['연도'] == y]
                 st.plotly_chart(px.bar(curr, x='월', y='금액', color='구분', barmode='group', color_discrete_map={'수익':'red','비용':'blue', '-':'gray'}))
