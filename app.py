@@ -35,12 +35,10 @@ def process_bank(file, biz_name, c_map):
         else:
             try: df = pd.read_excel(file)
             except: df = pd.read_html(file)[0]
-        
         h_idx = 0
         for i in range(min(20, len(df))):
             if '거래일시' in "".join(df.iloc[i].astype(str)): h_idx = i; break
         df.columns = df.iloc[h_idx]; df = df.iloc[h_idx+1:].reset_index(drop=True)
-        
         rows = []
         for _, r in df.iterrows():
             if pd.isna(r.get('거래일시')): continue
@@ -56,31 +54,25 @@ def process_bank(file, biz_name, c_map):
 st.title("🏠 율곡고시원 1·2호점 통합 관리")
 
 with st.sidebar:
-    st.header("📂 사업장별 데이터 업로드")
-    bank_f1 = st.file_uploader("🏢 사업장 1 우리은행 파일", type=['csv', 'xlsx', 'xls'])
-    bank_f2 = st.file_uploader("🏢 사업장 2 우리은행 파일", type=['csv', 'xlsx', 'xls'])
-    coupang_f = st.file_uploader("🛒 쿠팡 공통 파일", type=['csv'])
-    
+    st.header("📂 데이터 업로드")
+    bank_f1 = st.file_uploader("🏢 사업장 1 우리은행", type=['csv', 'xlsx', 'xls'])
+    bank_f2 = st.file_uploader("🏢 사업장 2 우리은행", type=['csv', 'xlsx', 'xls'])
+    coupang_f = st.file_uploader("🛒 쿠팡 공통", type=['csv'])
     if st.button("📦 모든 데이터 합치기", type="primary"):
         c_map = dict(zip(st.session_state.cat_df['항목명'], st.session_state.cat_df['연결구분']))
-        all_new_rows = []
-        
-        if bank_f1: all_new_rows += process_bank(bank_f1, "사업장1", c_map)
-        if bank_f2: all_new_rows += process_bank(bank_f2, "사업장2", c_map)
-        
+        all_new = []
+        if bank_f1: all_new += process_bank(bank_f1, "사업장1", c_map)
+        if bank_f2: all_new += process_bank(bank_f2, "사업장2", c_map)
         if coupang_f:
             try:
                 c_df = pd.read_csv(coupang_f, encoding='utf-8-sig')
                 for _, r in c_df.iterrows():
                     y, m, d = standardize_date(r.get('주문일',''))
                     amt = int(str(r.get('총결제금액(원)',0)).replace(',','').split('.')[0] or 0)
-                    # 쿠팡은 일단 '미분류'로 넣고 나중에 편집창에서 선택
-                    all_new_rows.append({"연도":y, "월":m, "날짜":d, "사업장":"미분류(쿠팡)", "내용":str(r.get('상품명','')), "용도":"기타", "구분":"비용", "금액":amt, "비고":"쿠팡"})
-            except: st.error("쿠팡 파일 처리 오류")
-
-        if all_new_rows:
-            st.session_state.master_df = pd.concat([st.session_state.master_df, pd.DataFrame(all_new_rows)]).drop_duplicates(subset=['날짜','내용','금액']).reset_index(drop=True)
-            st.success("데이터 통합 완료! 편집창에서 사업장을 확인하세요.")
+                    all_new.append({"연도":y, "월":m, "날짜":d, "사업장":"미분류(쿠팡)", "내용":str(r.get('상품명','')), "용도":"기타", "구분":"비용", "금액":amt, "비고":"쿠팡"})
+            except: pass
+        if all_new:
+            st.session_state.master_df = pd.concat([st.session_state.master_df, pd.DataFrame(all_new)]).drop_duplicates(subset=['날짜','내용','금액']).reset_index(drop=True)
             st.rerun()
 
 # --- [메인 레이아웃] ---
@@ -89,51 +81,54 @@ main_tabs = st.tabs(["📊 사업장별 리포트", "📝 장부 통합 편집",
 
 with main_tabs[1]: # 편집 탭
     if not df.empty:
-        # 상단 고정 합계 (사업장별 필터링 포함)
-        biz_filter = st.multiselect("조회할 사업장 선택", options=["사업장1", "사업장2", "미분류(쿠팡)"], default=["사업장1", "사업장2", "미분류(쿠팡)"])
-        f_df = df[df['사업장'].isin(biz_filter)]
-        
-        in_sum = f_df[f_df['구분']=='수익']['금액'].astype(float).sum()
-        ex_sum = f_df[f_df['구분']=='비용']['금액'].astype(float).sum()
-        
+        # 1. 상단 고정 합계창 (스크롤해도 보임)
+        in_sum = df[df['구분']=='수익']['금액'].astype(float).sum()
+        ex_sum = df[df['구분']=='비용']['금액'].astype(float).sum()
         st.markdown(f"""
-            <div style="position: sticky; top: 0; background-color: #f0f2f6; padding: 10px; border-radius: 5px; z-index: 1000; margin-bottom: 20px;">
-                <span style="color: red; font-weight: bold; margin-right: 20px;">🔴 수익: {int(in_sum):,}원</span>
-                <span style="color: blue; font-weight: bold; margin-right: 20px;">🔵 비용: {int(ex_sum):,}원</span>
-                <span style="color: black; font-weight: bold;">💰 잔액: {int(in_sum - ex_sum):,}원</span>
+            <div style="position: sticky; top: 0; background-color: #ffffff; padding: 15px; border: 2px solid #f0f2f6; border-radius: 10px; z-index: 1000; margin-bottom: 20px; box-shadow: 0px 2px 5px rgba(0,0,0,0.1);">
+                <span style="color: #ff4b4b; font-weight: bold; font-size: 1.1rem; margin-right: 25px;">🔴 전체 수익: {int(in_sum):,}원</span>
+                <span style="color: #1c83e1; font-weight: bold; font-size: 1.1rem; margin-right: 25px;">🔵 전체 비용: {int(ex_sum):,}원</span>
+                <span style="color: #31333F; font-weight: bold; font-size: 1.1rem;">💰 전체 잔액: {int(in_sum - ex_sum):,}원</span>
             </div>
         """, unsafe_allow_html=True)
 
-        # 편집창: 사업장 선택 기능 추가
+        # 2. 수익/비용 색상 입히기 함수
+        def color_row(row):
+            color = 'red' if row['구분'] == '수익' else ('blue' if row['구분'] == '비용' else 'black')
+            return [f'color: {color}; font-weight: bold' if name == '구분' else '' for name in row.index]
+
+        # 3. 편집창 구성
         cat_list = st.session_state.cat_df["항목명"].tolist()
         edited_df = st.data_editor(
-            df, 
+            df.style.apply(color_row, axis=1),
             use_container_width=True, 
             num_rows="dynamic",
             column_config={
                 "사업장": st.column_config.SelectboxColumn("사업장", options=["사업장1", "사업장2"], required=True),
                 "용도": st.column_config.SelectboxColumn("용도", options=cat_list),
-                "구분": st.column_config.TextColumn("구분", disabled=True),
+                "구분": st.column_config.TextColumn("구분(자동)", disabled=True),
                 "금액": st.column_config.NumberColumn("금액", format="%d")
-            }
+            },
+            key="biz_editor"
         )
         
-        if st.button("💾 변경사항 저장", use_container_width=True, type="primary"):
+        if st.button("💾 모든 변경사항 저장", use_container_width=True, type="primary"):
             c_map = dict(zip(st.session_state.cat_df['항목명'], st.session_state.cat_df['연결구분']))
             edited_df['구분'] = edited_df['용도'].map(c_map).fillna(edited_df['구분'])
             st.session_state.master_df = edited_df
             st.success("저장 완료!")
             st.rerun()
+    else:
+        st.info("데이터를 업로드해 주세요.")
 
 with main_tabs[0]: # 리포트 탭
     if not df.empty:
-        biz_choice = st.radio("보고서 선택", ["전체보기", "사업장1", "사업장2"], horizontal=True)
-        r_df = df if biz_choice == "전체보기" else df[df['사업장'] == biz_choice]
-        
+        biz_choice = st.radio("조회 사업장", ["전체", "사업장1", "사업장2"], horizontal=True)
+        r_df = df if biz_choice == "전체" else df[df['사업장'] == biz_choice]
         all_years = sorted(r_df['연도'].unique().tolist(), reverse=True)
         y_tabs = st.tabs([f"📅 {y}년" for y in all_years])
         for i, y in enumerate(all_years):
             with y_tabs[i]:
-                curr_df = r_df[r_df['연도'] == y]
-                st.plotly_chart(px.bar(curr_df, x='월', y='금액', color='구분', barmode='group', title=f"{biz_choice} {y}년 현황", color_discrete_map={'수익': 'red', '비용': 'blue'}))
-                st.dataframe(curr_df, use_container_width=True)
+                curr = r_df[r_df['연도'] == y]
+                st.plotly_chart(px.bar(curr, x='월', y='금액', color='구분', barmode='group', color_discrete_map={'수익': 'red', '비용': 'blue'}))
+                st.dataframe(curr, use_container_width=True)
