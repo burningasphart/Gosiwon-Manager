@@ -11,6 +11,7 @@ st.set_page_config(page_title="율곡고시원 통합 관리 시스템", layout=
 
 # --- [파일 및 설정 관리 로직] ---
 RULE_FILE = "category_rules.csv"
+CAT_CONFIG_FILE = "category_config.csv" # 용도-구분 설정 파일
 DB_PREFIX = "database_"
 
 def get_latest_db_file():
@@ -23,6 +24,23 @@ def load_data():
         try: return pd.read_csv(latest, dtype={'연도': str, '월': str})
         except: pass
     return pd.DataFrame(columns=["연도", "월", "날짜", "사업장", "내용", "용도", "구분", "금액", "비고"])
+
+# 용도 및 구분 설정 로드
+def load_cat_config():
+    if os.path.exists(CAT_CONFIG_FILE):
+        return pd.read_csv(CAT_CONFIG_FILE)
+    # 초기 기본값
+    default_data = [
+        {"용도": "입실료", "기본구분": "수익"}, {"용도": "공과금", "기본구분": "비용"},
+        {"용도": "식품", "기본구분": "비용"}, {"용도": "비품", "기본구분": "비용"},
+        {"용도": "임대료", "기본구분": "비용"}, {"용도": "보증금", "기본구분": "-"},
+        {"용도": "인건비", "기본구분": "비용"}, {"용도": "시설비", "기본구분": "비용"},
+        {"용도": "기타", "기본구분": "비용"}
+    ]
+    return pd.DataFrame(default_data)
+
+def save_cat_config(df):
+    df.to_csv(CAT_CONFIG_FILE, index=False, encoding='utf-8-sig')
 
 def load_rules():
     if os.path.exists(RULE_FILE):
@@ -39,9 +57,12 @@ if 'temp_df' not in st.session_state:
     st.session_state.temp_df = pd.DataFrame()
 if 'rules_df' not in st.session_state:
     st.session_state.rules_df = load_rules()
+if 'cat_config' not in st.session_state:
+    st.session_state.cat_config = load_cat_config()
 
-CAT_LIST = ["입실료", "공과금", "식품", "비품", "임대료", "보증금", "인건비", "시설비", "기타"]
-TYPE_MAP = {"입실료":"수익","공과금":"비용","식품":"비용","비품":"비용","임대료":"비용","보증금":"-","인건비":"비용","시설비":"비용","기타":"비용"}
+# 실시간 용도 리스트 및 구분 맵핑 생성
+CAT_LIST = st.session_state.cat_config['용도'].tolist()
+TYPE_MAP = dict(zip(st.session_state.cat_config['용도'], st.session_state.cat_config['기본구분']))
 
 # --- [자동 분류 엔진] ---
 def apply_rules(content, current_usage):
@@ -113,42 +134,69 @@ with st.sidebar:
             except: pass
         if new_data:
             st.session_state.temp_df = pd.DataFrame(new_data)
-            st.success("분석 완료! 규칙이 적용되었습니다.")
+            st.success("분석 완료!")
             st.rerun()
 
 t1, t2, t3 = st.tabs(["📊 리포트", "📝 장부 통합 편집", "⚙️ 설정"])
 
 with t3: # 설정 탭
-    st.subheader("⚙️ 자동 분류 규칙 설정")
-    st.write("내용(기재내용)에 특정 단어가 포함되면 해당 용도로 자동 분류합니다.")
+    st.subheader("⚙️ 시스템 설정")
     
-    with st.expander("➕ 새로운 규칙 추가", expanded=True):
+    # 1. 용도 및 구분 마스터 설정
+    st.write("### 🏷️ 1. 용도 및 기본 구분 설정")
+    st.caption("용도 리스트를 수정하거나 각 용도의 기본 구분(수익/비용/-)을 변경할 수 있습니다.")
+    
+    col_c1, col_c2 = st.columns([1, 1])
+    with col_c1:
+        new_cat_name = st.text_input("신규 용도 이름 (예: 수리비)")
+    with col_c2:
+        new_cat_type = st.selectbox("기본 구분 지정", options=["수익", "비용", "-"])
+        
+    if st.button("➕ 용도 추가"):
+        if new_cat_name:
+            new_cat_row = pd.DataFrame([{"용도": new_cat_name, "기본구분": new_cat_type}])
+            st.session_state.cat_config = pd.concat([st.session_state.cat_config, new_cat_row]).drop_duplicates(subset=['용도']).reset_index(drop=True)
+            save_cat_config(st.session_state.cat_config)
+            st.rerun()
+
+    edited_cat = st.data_editor(st.session_state.cat_config, num_rows="dynamic", use_container_width=True, 
+                               column_config={"기본구분": st.column_config.SelectboxColumn("기본구분", options=["수익", "비용", "-"])}, key="cat_editor")
+    if st.button("💾 용도/구분 설정 저장"):
+        st.session_state.cat_config = edited_cat
+        save_cat_config(edited_cat)
+        st.toast("설정이 저장되었습니다!")
+        st.rerun()
+
+    st.divider()
+
+    # 2. 키워드 자동 분류 규칙
+    st.write("### 🔍 2. 자동 분류 규칙 설정")
+    with st.expander("➕ 새로운 자동 규칙 추가"):
         c1, c2, c3 = st.columns([2, 2, 1])
-        with c1: new_kw = st.text_input("찾을 키워드 (예: 전기요금, 삼다수)")
-        with c2: new_cat = st.selectbox("지정할 용도", options=CAT_LIST)
+        with c1: new_kw = st.text_input("찾을 키워드")
+        with c2: new_rule_cat = st.selectbox("지정할 용도", options=CAT_LIST)
         with c3:
-            if st.button("규칙 추가", use_container_width=True):
+            if st.button("규칙 추가"):
                 if new_kw:
-                    new_row = pd.DataFrame([{"키워드": new_kw, "지정용도": new_cat}])
+                    new_row = pd.DataFrame([{"키워드": new_kw, "지정용도": new_rule_cat}])
                     st.session_state.rules_df = pd.concat([st.session_state.rules_df, new_row]).drop_duplicates().reset_index(drop=True)
                     save_rules(st.session_state.rules_df)
-                    st.success(f"'{new_kw}' 규칙이 서버에 저장되었습니다!")
                     st.rerun()
 
-    st.write("### 📋 현재 저장된 규칙 목록")
     if not st.session_state.rules_df.empty:
-        edited_rules = st.data_editor(st.session_state.rules_df, num_rows="dynamic", use_container_width=True, key="rule_editor")
-        if st.button("🔄 수정사항 서버에 저장"):
+        edited_rules = st.data_editor(st.session_state.rules_df, num_rows="dynamic", use_container_width=True, 
+                                     column_config={"지정용도": st.column_config.SelectboxColumn("지정용도", options=CAT_LIST)}, key="rule_editor")
+        if st.button("🔄 규칙 목록 업데이트"):
             st.session_state.rules_df = edited_rules
             save_rules(edited_rules)
-            st.toast("규칙이 서버에 업데이트되었습니다!")
+            st.toast("규칙이 업데이트되었습니다!")
 
 with t2: # 편집 탭
     st.subheader("📝 상세 필터링 및 편집")
     target_df = st.session_state.temp_df if not st.session_state.temp_df.empty else st.session_state.master_df
     
     if not target_df.empty:
-        # 필터 UI
+        # 합계 계산용 데이터 미리 추출
         f_col = st.columns(5)
         with f_col[0]: s_biz = st.multiselect("사업장", target_df['사업장'].unique(), default=target_df['사업장'].unique())
         with f_col[1]: s_year = st.multiselect("연도", target_df['연도'].unique(), default=target_df['연도'].unique())
@@ -158,7 +206,7 @@ with t2: # 편집 탭
 
         filtered_df = target_df[(target_df['사업장'].isin(s_biz)) & (target_df['연도'].isin(s_year)) & (target_df['월'].isin(s_month)) & (target_df['용도'].isin(s_usage)) & (target_df['구분'].isin(s_type))].copy()
 
-        # 장부 편집기 ('-' 포함 Selectbox 적용)
+        # 장부 편집기 (설정에서 불러온 CAT_LIST 반영)
         edited = st.data_editor(filtered_df, use_container_width=True, num_rows="dynamic",
             column_config={
                 "사업장": st.column_config.SelectboxColumn("사업장", options=["사업장1", "사업장2"]),
@@ -167,12 +215,10 @@ with t2: # 편집 탭
                 "금액": st.column_config.NumberColumn("금액", format="%d")
             }, key="main_editor")
 
-        # [핵심 수정] 편집된 데이터(edited)를 기준으로 실시간 합계 계산
+        # 실시간 합계 반영
         in_s = edited[edited['구분']=='수익']['금액'].astype(float).sum()
         ex_s = edited[edited['구분']=='비용']['금액'].astype(float).sum()
-        
-        # 합계창을 편집기 아래 혹은 위에 배치하여 실시간 확인 가능하게 함
-        st.info(f"🔴 수익: {int(in_s):,}원 | 🔵 비용: {int(ex_s):,}원 | 💰 합계: {int(in_s-ex_s):,}원")
+        st.info(f"🔴 수익: {int(in_s):,}원 | 🔵 비용: {int(ex_s):,}원 | 💰 잔액: {int(in_s-ex_s):,}원")
 
         st.divider()
         c1, c2, c3 = st.columns([2, 1, 1])
@@ -193,5 +239,5 @@ with t1: # 리포트 탭
         y_tabs = st.tabs([f"📅 {y}년" for y in years])
         for i, y in enumerate(years):
             with y_tabs[i]:
-                curr = m_df[m_df['연_도'] == y] if '연_도' in m_df.columns else m_df[m_df['연도'] == y]
+                curr = m_df[m_df['연도'] == y]
                 st.plotly_chart(px.bar(curr, x='월', y='금액', color='구분', barmode='group', color_discrete_map={'수익':'red','비용':'blue', '-':'gray'}))
